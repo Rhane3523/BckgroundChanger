@@ -1,4 +1,99 @@
-local carti1 = {
+-- BEGIN OWNED RUNTIME
+-- Own work started by this script so a replacement can stop it completely.
+local cartiRuntime = {Alive = true, Connections = {}, Threads = {}, Hooks = {}, Cleanups = {}, CleanupErrors = {}, NativeTask = task,
+    Instances = setmetatable({}, {__mode = 'k'})}
+function cartiRuntime:OwnInstance(instance)
+    self.Instances[instance] = true
+    return instance
+end
+function cartiRuntime:OnShutdown(callback)
+    table.insert(self.Cleanups, callback)
+end
+function cartiRuntime:CaptureHooks(target, keys)
+    local records = {}
+    for _, key in ipairs(keys) do table.insert(records, {target = target, key = key, original = target[key]}) end
+    return records
+end
+function cartiRuntime:SealHooks(records)
+    for _, record in ipairs(records) do
+        record.installed = record.target[record.key]
+        table.insert(self.Hooks, record)
+    end
+end
+function cartiRuntime:OwnHooks(target, originals)
+    for key, original in pairs(originals) do
+        table.insert(self.Hooks, {target = target, key = key, original = original, installed = target[key]})
+    end
+end
+function cartiRuntime:RunTask(mode, seconds, callback, ...)
+    if not self.Alive then return nil end
+    local thread = coroutine.create(function(...)
+        local ok, err = xpcall(callback, debug.traceback, ...)
+        self.Threads[coroutine.running()] = nil
+        if not ok and self.Alive then warn('[Carti ADM] ' .. tostring(err)) end
+    end)
+    self.Threads[thread] = true
+    if mode == 'delay' then self.NativeTask.delay(seconds, thread, ...)
+    else self.NativeTask[mode](thread, ...) end
+    return thread
+end
+function cartiRuntime:Connect(signal, callback)
+    for connection in pairs(self.Connections) do
+        if not connection.Connected then self.Connections[connection] = nil end
+    end
+    local connection = signal:Connect(function(...)
+        if self.Alive then self:RunTask('spawn', nil, callback, ...) end
+    end)
+    self.Connections[connection] = true
+    return connection
+end
+function cartiRuntime:Shutdown()
+    if not self.Alive then return end
+    self.Alive = false
+    for connection in pairs(self.Connections) do pcall(function() connection:Disconnect() end) end
+    table.clear(self.Connections)
+    for thread in pairs(self.Threads) do
+        if thread ~= coroutine.running() then pcall(self.NativeTask.cancel, thread) end
+    end
+    table.clear(self.Threads)
+    for i = #self.Cleanups, 1, -1 do
+        local ok, err = pcall(self.Cleanups[i])
+        if not ok then table.insert(self.CleanupErrors, tostring(err)) end
+    end
+    for instance in pairs(self.Instances) do pcall(function() instance:Destroy() end) end
+    table.clear(self.Instances)
+    for i = #self.Hooks, 1, -1 do
+        local record = self.Hooks[i]
+        if record.target[record.key] == record.installed then record.target[record.key] = record.original end
+    end
+    table.clear(self.Cleanups)
+    table.clear(self.Hooks)
+    if _G.CartiAdmRuntime == self then _G.CartiAdmRuntime = nil end
+end
+if _G.CartiAdmRuntime then
+    assert(type(_G.CartiAdmRuntime.Shutdown) == 'function', 'An older Carti ADM build is running. Rejoin once before loading this update.')
+    _G.CartiAdmRuntime:Shutdown()
+end
+_G.CartiAdmRuntime = cartiRuntime
+cartiRuntime.GlobalHooks = cartiRuntime:CaptureHooks(getfenv(), {
+    'CreateFakePlayerCharacterFromPARTNER_NAME', 'GetKindPet', 'OpenProfile', 'BlockPlayer',
+    'setActiveTab', 'createSettingRow', 'updatePartnerFromUsername', 'makePartnerAccept',
+    'makePartnerUnaccept', 'partnerBox', 'partnerStroke', 'spectatorBox',
+})
+cartiRuntime.SharedHooks = cartiRuntime:CaptureHooks(_G, {'fakePlayerIds', 'EmojiSystem'})
+cartiRuntime.ExportHooks = cartiRuntime:CaptureHooks((getgenv and getgenv()) or _G, {
+    'CartiHubRemoveTransferredLocalPets', 'CartiHubAddReceivedFakeTradePets', 'CartiHubAdoptMeLocalPetHooks',
+})
+local task = {
+    wait = cartiRuntime.NativeTask.wait,
+    spawn = function(callback, ...) return cartiRuntime:RunTask('spawn', nil, callback, ...) end,
+    defer = function(callback, ...) return cartiRuntime:RunTask('defer', nil, callback, ...) end,
+    delay = function(seconds, callback, ...) return cartiRuntime:RunTask('delay', seconds, callback, ...) end,
+    cancel = cartiRuntime.NativeTask.cancel,
+}
+-- END OWNED RUNTIME
+
+cartiRuntime.Services = {
     Players = game:GetService('Players'),
     ReplicatedStorage = game:GetService('ReplicatedStorage'),
     RunService = game:GetService('RunService'),
@@ -7,12 +102,12 @@ local carti1 = {
     HttpService = game:GetService('HttpService'),
     Chat = game:GetService('Chat')
 }
-local carti2 = carti1.Players
-local carti3 = carti1.ReplicatedStorage
-local carti4 = carti1.RunService
-local carti5 = carti1.UserInputService
-local carti6 = carti1.TweenService
-local carti7 = carti1.HttpService
+local carti2 = cartiRuntime.Services.Players
+local carti3 = cartiRuntime.Services.ReplicatedStorage
+local carti4 = cartiRuntime.Services.RunService
+local carti5 = cartiRuntime.Services.UserInputService
+local carti6 = cartiRuntime.Services.TweenService
+local carti7 = cartiRuntime.Services.HttpService
 
 pcall(function()
     setthreadidentity(2)
@@ -29,7 +124,7 @@ task.spawn(function()
     local carti10 = carti9.get_setting_server
 
     carti9.get_setting_server = function(carti240, settingName, ...)
-        if carti240 and carti240.UserId then
+        if type(carti240) == 'table' and carti240.UserId then
             if carti8[carti240.UserId] then return false end
             if not carti2:GetPlayerByUserId(carti240.UserId) then return false end
         end
@@ -39,6 +134,7 @@ task.spawn(function()
         end)
         if carti12 then return carti13 else return false end
     end
+    cartiRuntime:OwnHooks(carti9, {get_setting_server = carti10})
 end)
 
 -- Hook FamilyHelper early
@@ -51,26 +147,27 @@ task.spawn(function()
     local carti18 = carti14.is_my_family_because_friend
 
     carti14.are_friends_family = function(player1, player2)
-        if player1 and player2 and (carti8[player1.UserId] or carti8[player2.UserId]) then return false end
+        if (type(player1) == 'table' and carti8[player1.UserId]) or (type(player2) == 'table' and carti8[player2.UserId]) then return false end
         return carti15(player1, player2)
     end
     carti14.is_my_friend_or_family = function(carti240)
-        if carti240 and carti8[carti240.UserId] then return false end
+        if type(carti240) == 'table' and carti8[carti240.UserId] then return false end
         return carti16(carti240)
     end
     carti14.are_family_because_friends = function(player1, player2)
-        if player1 and player2 and (carti8[player1.UserId] or carti8[player2.UserId]) then return false end
+        if (type(player1) == 'table' and carti8[player1.UserId]) or (type(player2) == 'table' and carti8[player2.UserId]) then return false end
         return carti17(player1, player2)
     end
     carti14.is_my_family_because_friend = function(carti240)
-        if carti240 and carti8[carti240.UserId] then return false end
+        if type(carti240) == 'table' and carti8[carti240.UserId] then return false end
         return carti18(carti240)
     end
+    cartiRuntime:OwnHooks(carti14, {are_friends_family = carti15, is_my_friend_or_family = carti16,
+        are_family_because_friends = carti17, is_my_family_because_friend = carti18})
 end)
 
-local carti19 = require(carti3:WaitForChild('Fsys'))
-local carti20 = carti19.load
-local carti21 = {
+local carti20 = require(carti3:WaitForChild('Fsys')).load
+cartiRuntime.Modules = {
     UIManager = carti20('UIManager'),
     ClientData = carti20('ClientData'),
     TableUtil = carti20('TableUtil'),
@@ -79,13 +176,13 @@ local carti21 = {
     animationManager = carti20('AnimationManager'),
     ColorThemeManager = carti20('ColorThemeManager')
 }
-local carti22 = carti21.UIManager
-local carti23 = carti21.ClientData
-local carti24 = carti21.TableUtil
-local carti25 = carti21.RouterClient
-local carti26 = carti21.InventoryDB
-local carti27 = carti21.ColorThemeManager
-local carti28 = carti21.animationManager
+local carti22 = cartiRuntime.Modules.UIManager
+local carti23 = cartiRuntime.Modules.ClientData
+local carti24 = cartiRuntime.Modules.TableUtil
+local carti25 = cartiRuntime.Modules.RouterClient
+local carti26 = cartiRuntime.Modules.InventoryDB
+local carti27 = cartiRuntime.Modules.ColorThemeManager
+local carti28 = cartiRuntime.Modules.animationManager
 
 if carti22.wait_for_initialization then
     carti22:wait_for_initialization()
@@ -93,7 +190,7 @@ else
     task.wait(2)
 end
 
-local carti29 = {
+cartiRuntime.Apps = {
     TradeApp = carti22.apps.TradeApp,
     BackpackApp = carti22.apps.BackpackApp,
     DialogApp = carti22.apps.DialogApp,
@@ -103,12 +200,12 @@ local carti29 = {
     TradeHistoryApp = carti22.apps.TradeHistoryApp,
     TradePreviewApp = carti22.apps.TradePreviewApp
 }
-local carti30 = carti29.TradeApp
-local carti31 = carti29.BackpackApp
-local carti32 = carti29.HintApp
-local carti33 = carti29.DialogApp
-local carti34 = carti29.TradeHistoryApp
-local carti35 = carti29.PlayerProfileApp
+local carti30 = cartiRuntime.Apps.TradeApp
+local carti31 = cartiRuntime.Apps.BackpackApp
+local carti32 = cartiRuntime.Apps.HintApp
+local carti33 = cartiRuntime.Apps.DialogApp
+local carti34 = cartiRuntime.Apps.TradeHistoryApp
+local carti35 = cartiRuntime.Apps.PlayerProfileApp
 
 local carti36 = carti2.LocalPlayer.PlayerGui.TradeApp.Frame.NegotiationFrame
 
@@ -220,6 +317,7 @@ local carti46 = {
     ["Lunar Tiger"] = {name = "Lunar Tiger", ["rvalue - nopotion"] = 0.05, ["rvalue - fly&ride"] = 0.55, ["nvalue - fly&ride"] = 0.75, ["mvalue - fly&ride"] = 2.5},
 }
 
+cartiRuntime.ValueSource = 'fallback snapshot'
 local function carti47()
     local carti12, carti48 = pcall(function()
         return request({
@@ -240,11 +338,13 @@ local function carti47()
                 return carti7:JSONDecode(carti50.pets)
             end)
             if carti51 and carti52 and next(carti52) then
+                cartiRuntime.ValueSource = 'API snapshot'
                 return carti52
             end
         end
     end
     -- Return fallback values if API fails
+    cartiRuntime.ValueSource = 'fallback snapshot'
     return carti46
 end
 
@@ -259,7 +359,7 @@ end
 local function carti55(petKind, petProps)
     local carti56 = carti45[petKind] or petKind
     local carti57 = carti53[carti56]
-    if not carti57 then return 0 end
+    if not carti57 then return nil end
     local carti58
     if petProps.mega_neon then
         carti58 = "mvalue"
@@ -279,7 +379,7 @@ local function carti55(petKind, petProps)
         carti59 = " - nopotion"
     end
     local carti60 = carti58 .. carti59
-    return carti57[carti60] or carti57[carti58] or 0
+    return tonumber(carti57[carti60] or carti57[carti58])
 end
 
 local function carti61(rawData)
@@ -331,6 +431,7 @@ local function carti64(carti306)
 end
 
 local function carti67(carti232)
+    if carti232 == nil then return 'Unknown' end
     if carti232 >= 1000000 then
         return string.format("%.2fM", carti232 / 1000000)
     elseif carti232 >= 1000 then
@@ -351,6 +452,8 @@ local carti69 = {
     AUTO_ACCEPT_DELAY = 0.2,
     AUTO_CONFIRM_DELAY = 0.3,
     SPECTATOR_COUNT = 4,
+    SPECTATOR_VARIATION_MIN = -1,  -- Minimum variation from base count
+    SPECTATOR_VARIATION_MAX = 2,   -- Maximum variation from base count
     AUTO_SPECTATE_ENABLED = false,
     AUTO_SPECTATE_INTERVAL = 1.5,
     AUTO_PARTNER = true,
@@ -359,7 +462,6 @@ local carti69 = {
     SHOW_TRADE_REQUEST = true,  -- Set to true to show trade request dialog first
     TRADE_REQUEST_DELAY = 0,
     ADD_PET_REQUEST_DELAY = 0.5,
-    SPAWN_FAKE_PLAYER_WITH_RANDOM_PET = false,
     FAKE_PLAYER_ACCEPT_TRADE_REQUEST = 2,
     CHAT_MESSAGES = {
         'Tysm ! 💗💗', 'Thank you', 'Trusted TY ❤️', 'Can i play also', 'Can i spin this pet', 'Please respin 🥺',
@@ -377,36 +479,14 @@ local carti69 = {
     REMOVE_PARTNER_PETS_ON_CONFIRM = false,
 }
 
--- Store original spectator count
+-- Store original spectator count for reset functionality
 local carti70 = carti69.SPECTATOR_COUNT
 
--- Auto spectate shuffled sequence state
-local spectateSequence = {}
-local spectateIndex = 1
-local currentSpectatorCount = carti69.SPECTATOR_COUNT
-
--- Build shuffled sequence: starts at 0, then random permutation of 1..N
-local function buildSpectateSequence(count)
-    local seq = {0}
-    local nums = {}
-    for i = 1, count do nums[i] = i end
-    for i = #nums, 2, -1 do
-        local j = math.random(1, i)
-        nums[i], nums[j] = nums[j], nums[i]
-    end
-    for _, n in ipairs(nums) do seq[#seq + 1] = n end
-    return seq
-end
-
--- Get next spectator count from the shuffled sequence
+-- Function to get randomized spectator count based on original value
 local function carti71()
-    if #spectateSequence == 0 or spectateIndex > #spectateSequence then
-        spectateSequence = buildSpectateSequence(carti70)
-        spectateIndex = 1
-    end
-    local val = spectateSequence[spectateIndex]
-    spectateIndex = spectateIndex + 1
-    return val
+    local carti72 = math.random(carti69.SPECTATOR_VARIATION_MIN, carti69.SPECTATOR_VARIATION_MAX)
+    local carti73 = carti70 + carti72
+    return math.max(0, carti73) -- Ensure it doesn't go negative
 end
 
 local carti74 = {
@@ -464,109 +544,6 @@ end
 local function carti80()
     return carti76[math.random(1, #carti76)]
 end
-
--- ==================== PET CATEGORY LISTS ====================
-local POOR_PETS = {
-    'Mouse', 'Snow Cat', 'Fennec Fox', 'Kakapo', 'Camel', 'Forest Sprite', 'Buffalo',
-    'Poodle', 'Orangutan', 'Pangolin', 'Tegu', 'Dirty Ducky', 'Dog', 'Sado Mole',
-    'Stingray', 'California Condor', 'Armadillo', 'Ant', 'Bakeneko', 'Blue Cat',
-    'Muskrat', 'Shih Tzu', 'Kaijunior',
-}
-
-local MIDDLE_PETS = {
-    'Monkey', 'Mexican Wolf', 'Basilisk', 'Amber Butterfly', 'Angus Cow', 'Capuchin Monkey',
-    'Cherub Chipmunk', 'Cow', 'Gorilla', 'Ice Cube', 'Water Opossum', 'Leopard Shark',
-    'Longhorn Cow', 'Undead Elk', 'Thorny Devil', 'The Black Dog', 'African Wild Dog',
-    'Arctic Fox', 'Albino Bat', 'Magma Moose', 'Bunny Swirl', 'Burger Bear', 'Mini Pig',
-    'Manta Ray', 'Cabbit', 'Nightmare Owl', 'Clementine Owl', 'Crocodile', 'Dalmatian',
-    'Peppermint Penguin', 'Pretty Pony', 'Pupcake', 'Gingerbread Mouse', 'Hamster',
-    'Shiba Inu', 'Snowy Mammoth', 'Indian Flying Fox', 'Kage Crow', 'Stygian Owl',
-    'Honey Badger', 'Hedgehog',
-}
-
-local RICH_PETS = {
-    'Bat Dragon', 'Owl', 'Shadow Dragon', 'Giraffe', 'Frost Dragon', 'Parrot', 'Crow',
-    'Evil Unicorn', 'Turtle', 'Unicorn', 'Kangaroo', 'Aestus', 'Arctic Dusk Dragon',
-    'Arctic Reindeer', 'Balloon Unicorn', 'Ballet Swan', 'Axolotl', 'Blazing Lion',
-    'Blue Whale', 'Kitsune', 'Cerberus', 'Candicorn', 'Candy Hare',
-    'Chocolate Chip Bat Dragon', 'Lava Dragon', 'Chameleon', 'Majestic Pony', 'Cryptid',
-    'Mochi Meow', 'Fairy Bat Dragon', 'Purrowl', 'Phantom Dragon', 'Prismatic Butterfly',
-    'Giant Panda', 'Royal Capuchin Monkey', 'Glacier Kitsune', 'Scarebear',
-    'Diamond Dragon', 'Diamond Unicorn', 'Frost Fury', 'Golden Dragon', 'Golden Griffin',
-    'Golden Unicorn', 'Guardian Lion',
-}
-
--- Username lists per category - fill these with your own usernames
-local POOR_USERNAMES = {
-    'ridney123499', 'Babs17_209', 'SalmanBlox16', 'samu_030422', 'YujiXD16', '1lilkz', 'insanodel25', 'Maresoo11k',
-    'RealDealLex', 'itsmePicoy27', 'purplecat0078', 'DavidValguti', 'chicopro041', 'janiasiuuu', 'Nikiicool132', 'Sdrt1323',
-    'summy10291291028q', 'Gatitoperrito177', 'eyromeo777', 'Allenmo2018', 'tonyhim0', 'italomourareis2016', 'vhxfffhjf', 'lewi_yo3',
-}
-
-local MIDDLE_USERNAMES = {
-    'Stacy34585', 'hssn_175', 'secret_67511', 'Kohen808', '17_kaykayy9', 'ioipkokpo', 'Darellthagoat83', 'prachit2798',
-    'noezrael18', 'yoshi_msh', 'Angieluz_16', 'asfi3737sp', '9h_zErvic', 'LuisCr7558', 'Aylahope2016', '107wpfhx3',
-    'Kikin20135', 'bowow288', 'iophkfgyr', 'lili_676784', 'tom116714', 'jungjung2018', 'Ivan74cm283', 'juleslikesblue8474',
-}
-
-local RICH_USERNAMES = {
-    'Robin86909', 'Walidisacutie', 'Rlopez1567', 'Leeniim1246', 'Kisha67778', 'carlob88', 'Kin09474', 'mason2005rizz',
-    'Allen160702', 'T20ku16', 'nozomi3368', 'Kiaweeee123', 'Ayn_Clarence', 'mudder_mistery', 'azhart454', 'Lily_girls64',
-    'Yaieur737gfu', 'bob_bo641', 'riyaraj90', 'Matveyb168', 'Firashtarmiz', 'Dillin959', 'preetham000029', 'Skysis20',
-}
-
-local function carti80_poor()
-    return POOR_PETS[math.random(1, #POOR_PETS)]
-end
-
-local function carti80_middle()
-    return MIDDLE_PETS[math.random(1, #MIDDLE_PETS)]
-end
-
-local function carti80_rich()
-    return RICH_PETS[math.random(1, #RICH_PETS)]
-end
-
-local function randomUsernameFromList(list)
-    if not list or #list == 0 then return nil end
-    return list[math.random(1, #list)]
-end
-
--- Returns: petName, petFlags, rideMode ('riding' or 'beside' or nil)
-local function pickPetForCategory(petPickerFn)
-    if math.random() < 0.5 then
-        return petPickerFn(), { M = false, N = false, F = math.random() > 0.5, R = true }, 'riding'
-    else
-        return petPickerFn(), { M = false, N = false, F = math.random() > 0.5, R = true }, 'beside'
-    end
-end
-
--- Custom follow system for beside-pets
-local besidePetFollowers = {}
-
-local function startBesidePetFollowing(petModel, characterModel, offset)
-    table.insert(besidePetFollowers, { petModel = petModel, character = characterModel, offset = offset or Vector3.new(3, 0, 2) })
-end
-
-task.spawn(function()
-    local RunService = game:GetService('RunService')
-    while true do
-        RunService.Heartbeat:Wait()
-        for i = #besidePetFollowers, 1, -1 do
-            local entry = besidePetFollowers[i]
-            if not entry.petModel or not entry.petModel.Parent or not entry.character or not entry.character.Parent then
-                table.remove(besidePetFollowers, i)
-            else
-                local charRoot = entry.character:FindFirstChild('HumanoidRootPart') or entry.character.PrimaryPart
-                local petRoot = entry.petModel:FindFirstChild('HumanoidRootPart') or entry.petModel.PrimaryPart
-                if charRoot and petRoot then
-                    local targetCF = charRoot.CFrame * CFrame.new(entry.offset)
-                    petRoot.CFrame = petRoot.CFrame:Lerp(targetCF, 0.15)
-                end
-            end
-        end
-    end
-end)
 
 local function carti81()
     for category_name, category_table in pairs(carti26) do
@@ -646,6 +623,7 @@ local function carti87(carti240)
         CharacterRemoving = Instance.new('BindableEvent'),
     }
     
+    cartiRuntime:OnShutdown(function() carti91.CharacterAdded:Destroy(); carti91.CharacterRemoving:Destroy() end)
     return setmetatable(carti91, {
         __index = function(t, k)
             if k == 'Parent' then return carti2 end
@@ -698,7 +676,7 @@ local function carti93(realPlayer)
         sender_has_trade_license = true,
         recipient_has_trade_license = carti83,
         busy_indicators = {},
-        subscriber_count = carti69.AUTO_SPECTATE_ENABLED and 0 or carti69.SPECTATOR_COUNT,
+        subscriber_count = carti69.SPECTATOR_COUNT,
     }
 end
 
@@ -722,6 +700,94 @@ local function carti96(tradeRecord)
     carti74.addedTradeIds[tradeRecord.trade_id] = true
     table.insert(carti74.tradeHistory, tradeRecord)
 end
+
+-- BEGIN TRADE STATE
+-- Every delayed operation is tied to a session and an offer version.
+carti74.generation = 0
+carti74.invalidate = function()
+    carti74.generation += 1
+    carti74.partnerActionPending = false
+    carti74.isAddingItem = false
+    carti74.tradeCompleting = false
+    carti74.addingPartnerItem = false
+    if carti74.trade then carti74.trade.busy_indicators = {} end
+end
+carti74.capture = function()
+    local trade = carti74.trade
+    return {id = trade and trade.trade_id, generation = carti74.generation, version = trade and trade.offer_version}
+end
+carti74.isCurrent = function(token, checkVersion)
+    local trade = carti74.trade
+    return cartiRuntime.Alive and carti74.active and trade ~= nil and trade.trade_id == token.id
+        and carti74.generation == token.generation and (not checkVersion or trade.offer_version == token.version)
+end
+carti74.isLocked = function()
+    return carti30.lock_countdown and carti30.lock_countdown.is_going and carti30.lock_countdown:is_going()
+end
+carti74.resetOffer = function(clearItems)
+    if not carti74.active or not carti74.trade then return end
+    carti74.invalidate()
+    local trade = carti74.trade
+    for _, offer in ipairs({trade.sender_offer, trade.recipient_offer}) do
+        if clearItems then offer.items = {} end
+        offer.negotiated, offer.confirmed = false, false
+    end
+    trade.current_stage = 'negotiation'
+    trade.offer_version += 1
+    carti30:_overwrite_local_trade_state(trade)
+    if clearItems and carti31.reset_hidden_item_tag then carti31:reset_hidden_item_tag('TradeApp') end
+    if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
+end
+carti74.finishIfReady = function()
+    local trade = carti74.trade
+    if not carti74.active or not trade or trade.current_stage ~= 'confirmation' or carti74.tradeCompleting
+        or not trade.sender_offer.confirmed or not trade.recipient_offer.confirmed or carti74.isLocked() then return false end
+    local token = carti74.capture()
+    carti74.tradeCompleting = token
+    task.spawn(function()
+        local ok, err = xpcall(function()
+            if carti30._set_confirmation_arrow_rotating then carti30:_set_confirmation_arrow_rotating(true) end
+            task.wait(3)
+            if not carti74.isCurrent(token, true) then return end
+            local completed = carti74.trade
+            if completed.current_stage ~= 'confirmation' or not completed.sender_offer.confirmed
+                or not completed.recipient_offer.confirmed then return end
+            local history = carti95(completed)
+            local transferred = {}
+            for _, item in ipairs(completed.sender_offer.items) do
+                if item.carti_hub_local_pet then transferred[item.unique] = true end
+            end
+            local exports = (getgenv and getgenv()) or _G
+            -- Commit this session before any inventory helper can yield. No later
+            -- cleanup from this completion may change another trade's state.
+            carti74.invalidate()
+            carti74.active, carti74.trade = false, nil
+            carti74.canShowTradeRequest, carti74.tradeRequestBlocked = true, false
+            carti30.local_trade_state = nil
+            if carti31.reset_hidden_item_tag then carti31:reset_hidden_item_tag('TradeApp') end
+            carti22.set_app_visibility('TradeApp', false)
+            carti96(history)
+            if exports.CartiHubRemoveTransferredLocalPets then exports.CartiHubRemoveTransferredLocalPets(transferred) end
+            if exports.CartiHubAddReceivedFakeTradePets then exports.CartiHubAddReceivedFakeTradePets(completed.recipient_offer.items) end
+            if carti32 then carti32:hint({text = 'The trade was successful!', length = 5, overridable = true}) end
+        end, debug.traceback)
+        if carti74.tradeCompleting == token then carti74.tradeCompleting = false end
+        if not ok then warn('[Carti ADM] Mock trade completion failed: ' .. tostring(err)) end
+    end)
+    return true
+end
+-- END TRADE STATE
+
+cartiRuntime:OnShutdown(function()
+    carti74.invalidate()
+    if carti74.active then
+        carti74.active, carti74.trade = false, nil
+        carti30.local_trade_state = nil
+        if carti30.lock_countdown then carti30.lock_countdown:stop() end
+        if carti31.reset_hidden_item_tag then carti31:reset_hidden_item_tag('TradeApp') end
+        carti22.set_app_visibility('TradeApp', false)
+    end
+end)
 
 local function carti97()
     if not carti34 then return end
@@ -777,6 +843,7 @@ local function carti97()
 end
 
 carti97()
+cartiRuntime:OwnHooks(carti34, {_get_trade_history = carti74.originalGetTradeHistory, report_scam = carti74.originalReportScam})
 
 local function carti102(args1)
     local carti103 = carti74.trade.busy_indicators
@@ -785,76 +852,43 @@ local function carti102(args1)
     carti30.partner_negotiation_offer_pane:display_busy(carti103[tostring(carti104)])
 end
 
-local function carti105(carti341, flags, ageVal)
+local function carti105(name, flags)
     if not carti74.active or not carti74.trade then return false, 'No active mock trade' end
-    if carti74.trade.current_stage == 'confirmation' then return false, 'Cannot modify during confirmation' end
-    if #carti74.trade.recipient_offer.items >= 18 then return end
-
-    carti102({ ['picking'] = true })
-    task.wait(carti69.ADD_PET_REQUEST_DELAY)
-
-    for category_name, category_table in pairs(carti26) do
-        if category_name == 'pets' then
-            for id, item in pairs(category_table) do
-                if item.name == carti341 then
-                    local carti106 = {
-                        category = 'pets',
-                        kind = id,
-                        unique = carti7:GenerateGUID(),
-                        properties = { flyable = flags.F, rideable = flags.R, neon = flags.N, mega_neon = flags.M, age = ageVal or 1 },
-                    }
-                    table.insert(carti74.trade.recipient_offer.items, carti106)
-                    carti74.trade.sender_offer.negotiated = false
-                    carti74.trade.recipient_offer.negotiated = false
-                    if carti74.trade.current_stage == 'confirmation' then
-                        carti74.trade.current_stage = 'negotiation'
-                        carti74.trade.sender_offer.confirmed = false
-                        carti74.trade.recipient_offer.confirmed = false
-                    end
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    carti30:_overwrite_local_trade_state(carti74.trade)
-                    if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
-                    if carti30._render_message_in_trade_chat then
-                        carti30:_render_message_in_trade_chat(nil, string.format('%s added %s.', carti69.PARTNER_NAME, carti341), true)
-                    end
-                    carti102({ ['picking'] = false })
-                    return true, 'Pet added successfully'
-                end
-            end
-        end
+    if carti74.trade.current_stage ~= 'negotiation' then return false, 'Cannot modify during confirmation' end
+    if carti74.addingPartnerItem or #carti74.trade.recipient_offer.items >= 18 then return false, 'Offer is busy or full' end
+    local id
+    for kind, entry in pairs(carti26.pets) do
+        if entry.name:lower() == tostring(name):lower():gsub('^%s+', ''):gsub('%s+$', '') then id = kind; break end
     end
-    return false, 'Pet not found'
+    if not id then return false, 'Pet not found' end
+    local token, savedFlags = carti74.capture(), table.clone(flags or {})
+    carti74.addingPartnerItem = token
+    local ok, result = xpcall(function()
+        carti102({picking = true})
+        task.wait(carti69.ADD_PET_REQUEST_DELAY)
+        if not carti74.isCurrent(token, true) then return false end
+        local trade = carti74.trade
+        if trade.current_stage ~= 'negotiation' or #trade.recipient_offer.items >= 18 then return false end
+        table.insert(trade.recipient_offer.items, {category = 'pets', id = id, kind = id,
+            unique = carti7:GenerateGUID(false), properties = {flyable = savedFlags.F, rideable = savedFlags.R,
+                neon = savedFlags.N, mega_neon = savedFlags.M, age = 1, xp = 0}})
+        carti102({picking = false})
+        carti74.resetOffer(false)
+        return true
+    end, debug.traceback)
+    if carti74.addingPartnerItem == token then
+        carti74.addingPartnerItem = false
+        if carti74.isCurrent(token, false) then pcall(carti102, {picking = false}) end
+    end
+    return ok and result == true, ok and (result and 'Pet added' or 'Action cancelled') or tostring(result)
 end
 
 local function carti107()
-    if not carti74.active or not carti74.trade then return false, 'No active mock trade' end
-    if carti74.trade.current_stage == 'confirmation' then return false, 'Cannot modify during confirmation' end
-    local carti108 = carti74.trade.recipient_offer.items
-    if #carti108 == 0 then return false, 'No items to remove' end
-
-    local carti109 = table.remove(carti108)
-    carti74.trade.sender_offer.negotiated = false
-    carti74.trade.recipient_offer.negotiated = false
-    if carti74.trade.current_stage == 'confirmation' then
-        carti74.trade.current_stage = 'negotiation'
-        carti74.trade.sender_offer.confirmed = false
-        carti74.trade.recipient_offer.confirmed = false
-    end
-    carti74.trade.offer_version = carti74.trade.offer_version + 1
-    carti30:_overwrite_local_trade_state(carti74.trade)
-    if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
-    if carti30._render_message_in_trade_chat then
-        local carti110 = 'item'
-        if carti109.category == 'pets' then
-            for _, category_table in pairs(carti26) do
-                for id, item in pairs(category_table) do
-                    if id == carti109.kind then carti110 = item.name break end
-                end
-            end
-        end
-        carti30:_render_message_in_trade_chat(nil, string.format('%s removed %s.', carti69.PARTNER_NAME, carti110), true)
-    end
-    return true, 'Pet removed successfully'
+    if not carti74.active or not carti74.trade or carti74.trade.current_stage ~= 'negotiation' then return false end
+    if #carti74.trade.recipient_offer.items == 0 then return false end
+    table.remove(carti74.trade.recipient_offer.items)
+    carti74.resetOffer(false)
+    return true
 end
 
 local function carti111()
@@ -900,117 +934,35 @@ local function carti117()
 end
 
 local carti118
-local carti161
-local carti_saveSpawnedPets
-local carti_loadSpawnedPets
-local carti_clearSavedPets
 
 local function carti119()
     if not carti74.active or not carti74.trade or carti74.partnerActionPending then return end
-    carti74.partnerActionPending = true
-
-    while carti30.lock_countdown and carti30.lock_countdown.is_going and carti30.lock_countdown:is_going() do
-        task.wait(0.1)
-    end
-
-    if carti74.trade.current_stage == 'negotiation' then
-        task.wait(carti69.AUTO_ACCEPT_DELAY)
-        if carti74.active and carti74.trade then
-            carti74.trade.recipient_offer.negotiated = true
-            if carti74.trade.sender_offer.negotiated then
-                carti74.trade.current_stage = 'confirmation'
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                carti30:_overwrite_local_trade_state(carti74.trade)
-                if carti30._evaluate_trade_fairness then carti30:_evaluate_trade_fairness() end
-                if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
-            else
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                carti30:_overwrite_local_trade_state(carti74.trade)
-            end
+    local token = carti74.capture()
+    carti74.partnerActionPending = token
+    local ok, err = xpcall(function()
+        while carti74.isLocked() do
+            if not carti74.isCurrent(token, true) then return end
+            task.wait(0.1)
         end
-    elseif carti74.trade.current_stage == 'confirmation' then
-        task.wait(carti69.AUTO_CONFIRM_DELAY)
-        if carti74.active and carti74.trade then
-            carti74.trade.recipient_offer.confirmed = true
-            carti74.trade.offer_version = carti74.trade.offer_version + 1
-            carti30:_overwrite_local_trade_state(carti74.trade)
-            if carti74.trade.sender_offer.confirmed and not carti74.tradeCompleting then
-                carti74.tradeCompleting = true
-                if carti30._set_confirmation_arrow_rotating then carti30:_set_confirmation_arrow_rotating(true) end
-                task.wait(3)
-                local carti120 = carti95(carti74.trade)
-                carti96(carti120)
-
-                -- Capture items SEBELUM state direset
-                local uniquesToRemove = {}
-                for _, item in ipairs(carti74.trade.sender_offer.items) do
-                    if item.unique then table.insert(uniquesToRemove, item.unique) end
-                end
-                local itemsToAdd = {}
-                for _, item in ipairs(carti74.trade.recipient_offer.items) do
-                    table.insert(itemsToAdd, item)
-                end
-
-                -- Reset state & tutup UI dulu
-                carti74.active = false
-                carti74.trade = nil
-                carti74.tradeCompleting = false
-                carti74.scamWarningShown = true
-                carti74.canShowTradeRequest = true
-                carti74.tradeRequestBlocked = false
-                carti22.set_app_visibility('TradeApp', false)
-                if carti31 and carti31.reset_hidden_item_tag then
-                    pcall(function() carti31:reset_hidden_item_tag('TradeApp') end)
-                end
-                task.wait(0.15)
-                carti118()
-
-                -- SETELAH state bersih, hapus pet dari backpack
-                if #uniquesToRemove > 0 then
-                    carti161('inventory', function(inv)
-                        inv.pets = inv.pets or {}
-                        for _, unique in ipairs(uniquesToRemove) do
-                            inv.pets[unique] = nil
-                        end
-                        return inv
-                    end)
-                end
-
-                -- Tambah pet dari partner ke backpack
-                if #itemsToAdd > 0 then
-                    carti161('inventory', function(inv)
-                        inv.pets = inv.pets or {}
-                        for _, item in ipairs(itemsToAdd) do
-                            local newUnique = '2_' .. carti7:GenerateGUID(false)
-                            inv.pets[newUnique] = {
-                                unique = newUnique,
-                                category = 'pets',
-                                carti_hub_local_pet = true,
-                                id = item.kind,
-                                kind = item.kind,
-                                properties = {
-                                    rideable = (item.properties and item.properties.rideable) or false,
-                                    flyable = (item.properties and item.properties.flyable) or false,
-                                    neon = (item.properties and item.properties.neon) or false,
-                                    mega_neon = (item.properties and item.properties.mega_neon) or false,
-                                    pet_trick_level = 0,
-                                    friendship_level = 0,
-                                    age = (item.properties and item.properties.age) or 1,
-                                },
-                                newness_order = os.time() * 1000,
-                            }
-                        end
-                        return inv
-                    end)
-                    carti_saveSpawnedPets()
-                end
-
-                if carti32 then carti32:hint({ text = 'The trade was successful!', length = 5, overridable = true }) end
-                if carti34 and carti22.is_visible('TradeHistoryApp') then carti34:_refresh() end
+        if not carti74.isCurrent(token, true) then return end
+        local stage = carti74.trade.current_stage
+        task.wait(stage == 'negotiation' and carti69.AUTO_ACCEPT_DELAY or carti69.AUTO_CONFIRM_DELAY)
+        if not carti74.isCurrent(token, true) or carti74.isLocked() then return end
+        local trade = carti74.trade
+        if stage == 'negotiation' then
+            trade.recipient_offer.negotiated = true
+            if trade.sender_offer.negotiated then
+                trade.current_stage = 'confirmation'
+                trade.sender_offer.confirmed, trade.recipient_offer.confirmed = false, false
             end
-        end
-    end
-    carti74.partnerActionPending = false
+        elseif stage == 'confirmation' then trade.recipient_offer.confirmed = true end
+        trade.offer_version += 1
+        carti30:_overwrite_local_trade_state(trade)
+        if stage == 'negotiation' and trade.current_stage == 'confirmation' then carti30:_lock_trade_for_appropriate_time() end
+        carti74.finishIfReady()
+    end, debug.traceback)
+    if carti74.partnerActionPending == token then carti74.partnerActionPending = false end
+    if not ok then warn('[Carti ADM] Partner action failed: ' .. tostring(err)) end
 end
 
 local function carti121()
@@ -1022,12 +974,14 @@ local function carti121()
     carti30._overwrite_local_trade_state = function(self, newState)
         if carti74.active then
             if newState then
+                if carti74.trade and carti74.trade.trade_id ~= newState.trade_id then carti74.invalidate() end
                 carti74.trade = newState
                 self.local_trade_state = newState
-                if carti74.trade then carti74.trade.subscriber_count = currentSpectatorCount end
+                if carti74.trade then carti74.trade.subscriber_count = carti69.SPECTATOR_COUNT end
                 if self._on_local_trade_state_changed then self:_on_local_trade_state_changed(newState, newState) end
-                if self.refresh_all then self:refresh_all() carti37(false) end
+                if self.refresh_all then self:refresh_all() carti37(true) end
             else
+                carti74.invalidate()
                 carti74.trade = nil
                 carti74.active = false
                 carti74.scamWarningShown = false
@@ -1096,6 +1050,7 @@ local function carti121()
 
     carti30._lock_trade_for_appropriate_time = function(self)
         if carti74.active then
+            carti74.invalidate()
             if self.lock_countdown then self.lock_countdown:stop() self.lock_countdown:set_duration(self:_get_lock_time()) self.lock_countdown:start() end
         else
             return carti74.originalFunctions._lock_trade_for_appropriate_time(self)
@@ -1103,127 +1058,71 @@ local function carti121()
     end
 
     carti30._add_item_to_my_offer = function(self)
-        if carti74.active and carti74.trade then
-            if carti74.isAddingItem then return end
-            carti74.isAddingItem = true
-            
-            local carti124 = nil
-            pcall(function()
-                carti124 = carti31:pick_item({ 
-                    keep_cached_scroll_positions_on_open = true, 
-                    allow_callback = function() return true end 
-                })
-            end)
-            
-            if carti124 then
-                local carti125 = false
-                for _, item in ipairs(carti74.trade.sender_offer.items) do 
-                    if item.unique == carti124.unique then 
-                        carti125 = true 
-                        break 
-                    end 
-                end
-                if not carti125 then
-                    table.insert(carti74.trade.sender_offer.items, carti124)
-                    carti74.trade.sender_offer.negotiated = false
-                    carti74.trade.recipient_offer.negotiated = false
-                    if carti74.trade.current_stage == 'confirmation' then
-                        carti74.trade.current_stage = 'negotiation'
-                        carti74.trade.sender_offer.confirmed = false
-                        carti74.trade.recipient_offer.confirmed = false
-                    end
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    pcall(function() self:_overwrite_local_trade_state(carti74.trade) end)
-                    pcall(function() self:_lock_trade_for_appropriate_time() end)
-                    pcall(function()
-                        if carti31 and carti31.set_item_unique_hidden then 
-                            carti31:set_item_unique_hidden(carti124.unique, 'TradeApp') 
-                        end
-                    end)
-                end
-            end
-            carti74.isAddingItem = false
-        else
-            return carti74.originalFunctions._add_item_to_my_offer(self)
-        end
+        if not carti74.active then return carti74.originalFunctions._add_item_to_my_offer(self) end
+        if not carti74.trade or carti74.isAddingItem or carti74.trade.current_stage ~= 'negotiation'
+            or #carti74.trade.sender_offer.items >= 18 then return end
+        local token = carti74.capture()
+        carti74.isAddingItem = token
+        local ok, item = pcall(function() return carti31:pick_item({keep_cached_scroll_positions_on_open = true,
+            allow_callback = function(value) return not (value and value.carti_hub_local_preview) end}) end)
+        if carti74.isAddingItem == token then carti74.isAddingItem = false end
+        if not ok or not item or not carti74.isCurrent(token, true) or item.carti_hub_local_preview then return end
+        local items = carti74.trade.sender_offer.items
+        if #items >= 18 then return end
+        for _, existing in ipairs(items) do if existing.unique == item.unique then return end end
+        table.insert(items, item)
+        carti74.resetOffer(false)
+        if carti31.set_item_unique_hidden then carti31:set_item_unique_hidden(item.unique, 'TradeApp') end
     end
 
     carti30._remove_item_from_my_offer = function(self, item)
-        if carti74.active and carti74.trade then
-            for i, carti152 in ipairs(carti74.trade.sender_offer.items) do
-                if carti152.unique == item.unique then
-                    table.remove(carti74.trade.sender_offer.items, i)
-                    carti74.trade.sender_offer.negotiated = false
-                    carti74.trade.recipient_offer.negotiated = false
-                    if carti74.trade.current_stage == 'confirmation' then
-                        carti74.trade.current_stage = 'negotiation'
-                        carti74.trade.recipient_offer.negotiated = false
-                        carti74.trade.sender_offer.confirmed = false
-                        carti74.trade.recipient_offer.confirmed = false
-                    end
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    self:_overwrite_local_trade_state(carti74.trade)
-                    if self._lock_trade_for_appropriate_time then self:_lock_trade_for_appropriate_time() end
-                    if carti31.reset_hidden_item_tag then carti31:reset_hidden_item_tag('TradeApp') end
-                    break
-                end
+        if not carti74.active then return carti74.originalFunctions._remove_item_from_my_offer(self, item) end
+        if not carti74.trade or not item then return end
+        for i, existing in ipairs(carti74.trade.sender_offer.items) do
+            if existing.unique == item.unique then
+                table.remove(carti74.trade.sender_offer.items, i)
+                carti74.resetOffer(false)
+                if carti31.reset_hidden_item_tag then carti31:reset_hidden_item_tag('TradeApp') end
+                return
             end
-        else
-            return carti74.originalFunctions._remove_item_from_my_offer(self, item)
         end
     end
 
     carti30._on_accept_pressed = function(self)
-        if carti74.active and carti74.trade then
-            if carti74.trade.sender_offer.negotiated then
-                carti74.trade.sender_offer.negotiated = false
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                self:_overwrite_local_trade_state(carti74.trade)
-            else
-                carti74.trade.sender_offer.negotiated = true
-                if carti74.trade.recipient_offer.negotiated then
-                    carti74.trade.current_stage = 'confirmation'
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    self:_overwrite_local_trade_state(carti74.trade)
-                    if carti30._evaluate_trade_fairness then carti30:_evaluate_trade_fairness() end
-                    if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
-                else
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    self:_overwrite_local_trade_state(carti74.trade)
-                end
-            end
-            if carti69.AUTO_PARTNER and not carti74.trade.recipient_offer.negotiated and carti74.trade.sender_offer.negotiated then task.spawn(carti119) end
-        else
-            return carti74.originalFunctions._on_accept_pressed(self)
+        if not carti74.active then return carti74.originalFunctions._on_accept_pressed(self) end
+        local trade = carti74.trade
+        if not trade or trade.current_stage ~= 'negotiation' or carti74.isLocked() then return end
+        if trade.sender_offer.negotiated then carti74.resetOffer(false); return end
+        trade.sender_offer.negotiated = true
+        if trade.recipient_offer.negotiated then
+            trade.current_stage = 'confirmation'
+            trade.sender_offer.confirmed, trade.recipient_offer.confirmed = false, false
         end
+        trade.offer_version += 1
+        self:_overwrite_local_trade_state(trade)
+        if trade.current_stage == 'confirmation' then self:_lock_trade_for_appropriate_time()
+        elseif carti69.AUTO_PARTNER then task.spawn(carti119) end
     end
 
     carti30._on_confirm_pressed = function(self)
-        if carti74.active and carti74.trade then
-            if carti74.removePartnerPetsOnConfirm then carti117() end
-            carti74.trade.sender_offer.confirmed = true
-            carti74.trade.offer_version = carti74.trade.offer_version + 1
-            self:_overwrite_local_trade_state(carti74.trade)
-            if carti69.AUTO_PARTNER and not carti74.trade.recipient_offer.confirmed then task.spawn(carti119) end
-        else
-            return carti74.originalFunctions._on_confirm_pressed(self)
+        if not carti74.active then return carti74.originalFunctions._on_confirm_pressed(self) end
+        local trade = carti74.trade
+        if not trade or trade.current_stage ~= 'confirmation' or carti74.isLocked() then return end
+        if trade.sender_offer.confirmed or carti74.tradeCompleting then carti74.finishIfReady(); return end
+        if carti74.removePartnerPetsOnConfirm and #trade.recipient_offer.items > 0 then
+            trade.recipient_offer.items = {}
+            carti74.resetOffer(false)
+            return
         end
+        trade.sender_offer.confirmed = true
+        trade.offer_version += 1
+        self:_overwrite_local_trade_state(trade)
+        if not carti74.finishIfReady() and carti69.AUTO_PARTNER and not trade.recipient_offer.confirmed then task.spawn(carti119) end
     end
 
     carti30._on_unaccept_pressed = function(self)
-        if carti74.active and carti74.trade then
-            carti74.trade.sender_offer.negotiated = false
-            if carti74.trade.current_stage == 'confirmation' then
-                carti74.trade.current_stage = 'negotiation'
-                carti74.trade.recipient_offer.negotiated = false
-                carti74.trade.sender_offer.confirmed = false
-                carti74.trade.recipient_offer.confirmed = false
-            end
-            carti74.trade.offer_version = carti74.trade.offer_version + 1
-            self:_overwrite_local_trade_state(carti74.trade)
-        else
-            return carti74.originalFunctions._on_unaccept_pressed(self)
-        end
+        if not carti74.active then return carti74.originalFunctions._on_unaccept_pressed(self) end
+        carti74.resetOffer(false)
     end
 
     carti30._decline_trade = function(self, silent)
@@ -1264,12 +1163,15 @@ local function carti121()
 end
 
 carti121()
+cartiRuntime:OwnHooks(carti30, carti74.originalFunctions)
 
 -- FIXED: Function to start mock trade directly without dialog issues
 local function carti127()
     -- Only prevent if already in a trade
-    if carti74.active then return end
-    
+    if carti74.active or carti74.partnerLookupPending then return end
+    if not carti74.partnerVerified and not updatePartnerFromUsername(carti69.PARTNER_NAME) then return end
+    carti74.invalidate()
+    local generation = carti74.generation
     local carti12, carti128 = pcall(function()
         -- Reset all states first
         carti74.active = false
@@ -1291,14 +1193,16 @@ local function carti127()
         -- Close any existing trade UI
         pcall(function() carti22.set_app_visibility('TradeApp', false) end)
         task.wait(0.05)
+        if generation ~= carti74.generation or not carti74.active then return end
         
         -- Overwrite trade state
         pcall(function() carti30:_overwrite_local_trade_state(carti74.trade) end)
         task.wait(0.05)
+        if generation ~= carti74.generation or not carti74.active then return end
         
         -- Show trade UI
         pcall(function() carti22.set_app_visibility('TradeApp', true) end)
-        pcall(function() carti37(false) end)
+        pcall(function() carti37(true) end)
         
         -- Show intro message (public chat notice)
         pcall(function()
@@ -1311,14 +1215,8 @@ local function carti127()
         pcall(function() 
             if carti30.refresh_all then 
                 carti30:refresh_all() 
-                carti37(false) 
+                carti37(true) 
             end 
-        end)
-        pcall(function()
-            if carti154.spoofedName then
-                local frame = carti2.LocalPlayer.PlayerGui.TradeApp.Frame.NegotiationFrame
-                frame.Header.MyFrame.NameLabel.Text = carti154.spoofedName
-            end
         end)
     end)
     
@@ -1332,10 +1230,12 @@ local function carti129()
     if carti74.pendingTradeRequest or carti74.active then
         return
     end
+    local generation, partnerName = carti74.generation, carti69.PARTNER_NAME
     carti74.pendingTradeRequest = true
     carti74.canShowTradeRequest = false
     task.wait(carti69.TRADE_REQUEST_DELAY)
-    if not carti74.pendingTradeRequest or carti74.active then
+    if not carti74.pendingTradeRequest or carti74.active or carti74.generation ~= generation
+        or carti69.PARTNER_NAME ~= partnerName then
         carti74.pendingTradeRequest = false
         carti74.canShowTradeRequest = true
         return
@@ -1346,6 +1246,10 @@ local function carti129()
         ["text"] = carti130 .. " sent you a trade request", 
         ["left"] = "Decline", 
         ["right"] = "Accept", 
+        ["header"] = {
+            ["text"] = "Verified Friend",
+            ["icon"] = "rbxassetid://84667805159408" 
+        },
         ["tooltip_options"] = {
             ["force_display_post_trade_values"] = true
         },
@@ -1382,7 +1286,7 @@ local function carti129()
     carti74.isMockTradeDialog = false
     carti74.pendingTradeRequest = false
     
-    if carti12 and carti133 and (carti133 == "Accept" or carti133 == "right") then
+    if carti74.generation == generation and carti69.PARTNER_NAME == partnerName and carti12 and carti133 and (carti133 == "Accept" or carti133 == "right") then
         carti127()
     else
         carti74.canShowTradeRequest = true
@@ -1393,8 +1297,15 @@ local function carti134()
     local carti135 = carti25.get_event('TradeAPI/TradeRequestReceived')
     if carti135 then
         local carti136 = getconnections(carti135.OnClientEvent)
-        for _, connection in pairs(carti136) do connection:Disable() end
-        carti135.OnClientEvent:Connect(function(carti139)
+        local enabled = {}
+        for _, connection in pairs(carti136) do
+            if connection.Enabled then table.insert(enabled, connection); connection:Disable() end
+        end
+        carti136 = enabled
+        cartiRuntime:OnShutdown(function()
+            for _, connection in ipairs(enabled) do pcall(function() connection:Enable() end) end
+        end)
+        cartiRuntime:Connect(carti135.OnClientEvent, function(carti139)
             if carti74.active or carti74.tradeRequestBlocked then
                 table.insert(carti74.blockedTradeRequests, { player = carti139, timestamp = tick() })
                 return
@@ -1434,6 +1345,7 @@ local function carti137()
 end
 
 carti137()
+cartiRuntime:OwnHooks(carti33, {dialog = carti74.originalDialogFunction})
 carti134()
 
 carti118 = function()
@@ -1482,23 +1394,34 @@ task.spawn(function()
                         if carti142 then carti142() end
                     end
                 end
+                cartiRuntime:OwnHooks(carti141.callbacks, {mouse_button1_click = carti142})
             end
         end
     end)
 end)
 
 function updatePartnerFromUsername(username)
-    local carti12, carti143 = pcall(function() return carti2:GetUserIdFromNameAsync(username) end)
-    if carti12 and carti143 then
-        carti69.PARTNER_USER_ID = carti143
-        carti69.PARTNER_NAME = username
-        carti92 = carti87()
-        return true
-    else
-        carti69.PARTNER_NAME = username
-        carti92 = carti87()
-        return false
+    if carti74.active then
+        if partnerBox then partnerBox.Text = carti69.PARTNER_NAME end
+        return false, 'Finish the current trade before changing partners'
     end
+    username = tostring(username or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    carti74.partnerLookupSequence = (carti74.partnerLookupSequence or 0) + 1
+    local sequence = carti74.partnerLookupSequence
+    carti74.partnerLookupPending = true
+    carti74.invalidate()
+    local ok, id = pcall(function() return carti2:GetUserIdFromNameAsync(username) end)
+    if sequence ~= carti74.partnerLookupSequence or not cartiRuntime.Alive then return false end
+    carti74.partnerLookupPending = false
+    if not ok or type(id) ~= 'number' or id <= 0 then
+        if partnerBox then partnerBox.Text = carti74.partnerVerified and carti69.PARTNER_NAME or '' end
+        return false, 'Username not found'
+    end
+    carti69.PARTNER_NAME, carti69.PARTNER_USER_ID = username, id
+    carti74.partnerVerified = true
+    carti92 = carti87()
+    if partnerBox then partnerBox.Text = username end
+    return true
 end
 
 local function carti144(carti181, carti180)
@@ -1556,271 +1479,54 @@ local carti154 = {
         startTrade = Enum.KeyCode.T,
         blockPlayer = Enum.KeyCode.B
     },
-    waitingForKeybind = nil,
-    spoofedName = nil,
+    waitingForKeybind = nil
 }
 local carti155 = carti154.tabFrames
 local carti156 = carti154.tabButtons
 local carti157 = carti154.richestData
 local carti158 = carti154.expandedPlayers
 
-local function SetupWindowControls(frame, titleBar)
-    titleBar.Active = true
-
-    local sizeConstraint = Instance.new('UISizeConstraint')
-    sizeConstraint.MinSize = Vector2.new(220, 300)
-    sizeConstraint.MaxSize = Vector2.new(600, 1000)
-    sizeConstraint.Parent = frame
-
-    -- Dragging via titleBar
-    local dragging = false
-    local dragInput, dragStart, dragStartPos
-
-    titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            dragStartPos = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-
-    titleBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-        end
-    end)
-
-    carti5.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X,
-                dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-
-    -- Close button
-    local closeBtn = Instance.new('TextButton')
-    closeBtn.Size = UDim2.new(0, 22, 0, 22)
-    closeBtn.Position = UDim2.new(1, -26, 0, 0)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-    closeBtn.Text = 'X'
-    closeBtn.Font = Enum.Font.GothamBold
-    closeBtn.TextSize = 12
-    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    closeBtn.Parent = titleBar
-    Instance.new('UICorner', closeBtn).CornerRadius = UDim.new(0, 6)
-
-    closeBtn.MouseButton1Click:Connect(function()
-        frame.Visible = false
-    end)
-
-    -- Minimize button
-    local minBtn = Instance.new('TextButton')
-    minBtn.Size = UDim2.new(0, 22, 0, 22)
-    minBtn.Position = UDim2.new(1, -52, 0, 0)
-    minBtn.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
-    minBtn.Text = '_'
-    minBtn.Font = Enum.Font.GothamBold
-    minBtn.TextSize = 12
-    minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    minBtn.Parent = titleBar
-    Instance.new('UICorner', minBtn).CornerRadius = UDim.new(0, 6)
-
-    minBtn.MouseButton1Click:Connect(function()
-        frame.Visible = false
-        local screenGui = frame.Parent
-        if not screenGui then return end
-        local existing = screenGui:FindFirstChild('RestoreButton')
-        if existing then existing:Destroy() end
-        local restoreBtn = Instance.new('TextButton')
-        restoreBtn.Name = 'RestoreButton'
-        restoreBtn.Size = UDim2.new(0, 100, 0, 30)
-        restoreBtn.Position = UDim2.new(0, 10, 1, -40)
-        restoreBtn.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        restoreBtn.Text = 'Restore'
-        restoreBtn.Font = Enum.Font.FredokaOne
-        restoreBtn.TextSize = 12
-        restoreBtn.TextColor3 = Color3.fromRGB(255, 60, 60)
-        restoreBtn.Parent = screenGui
-        Instance.new('UICorner', restoreBtn).CornerRadius = UDim.new(0, 6)
-        local rStroke = Instance.new('UIStroke', restoreBtn)
-        rStroke.Color = Color3.fromRGB(255, 34, 34)
-        rStroke.Thickness = 1.5
-        rStroke.Transparency = 0.2
-        restoreBtn.MouseButton1Click:Connect(function()
-            frame.Visible = true
-            restoreBtn:Destroy()
-        end)
-    end)
-
-    -- Resize handle (bottom-right corner)
-    local resizeHandle = Instance.new('TextButton')
-    resizeHandle.Size = UDim2.new(0, 16, 0, 16)
-    resizeHandle.Position = UDim2.new(1, -16, 1, -16)
-    resizeHandle.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    resizeHandle.Text = ''
-    resizeHandle.Parent = frame
-    Instance.new('UICorner', resizeHandle).CornerRadius = UDim.new(0, 4)
-    local rhStroke = Instance.new('UIStroke', resizeHandle)
-    rhStroke.Color = Color3.fromRGB(255, 34, 34)
-    rhStroke.Thickness = 1
-    rhStroke.Transparency = 0.4
-
-    local resizing = false
-    local resizeInput, resizeStart, resizeStartSize
-
-    resizeHandle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            resizing = true
-            resizeStart = input.Position
-            resizeStartSize = frame.Size
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    resizing = false
-                end
-            end)
-        end
-    end)
-
-    resizeHandle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            resizeInput = input
-        end
-    end)
-
-    carti5.InputChanged:Connect(function(input)
-        if input == resizeInput and resizing then
-            local delta = input.Position - resizeStart
-            local newWidth = math.clamp(resizeStartSize.X.Offset + delta.X, sizeConstraint.MinSize.X, sizeConstraint.MaxSize.X)
-            local newHeight = math.clamp(resizeStartSize.Y.Offset + delta.Y, sizeConstraint.MinSize.Y, sizeConstraint.MaxSize.Y)
-            frame.Size = UDim2.new(0, newWidth, 0, newHeight)
-        end
-    end)
-end
-
 local carti159 = {}
 local carti160 = {}
 
-carti161 = function(carti60, action)
-    local carti162 = carti23.get(carti60)
+local function carti161(carti60, action)
+    local carti162 = carti23.get(carti60) or {}
     local carti163 = table.clone(carti162)
+    -- Inventory/equip actions edit nested tables. Copy them instead of modifying
+    -- server-owned entries through the shallow outer copy.
+    if carti60 == 'inventory' or carti60 == 'equip_manager' then
+        local seen = {}
+        local function copy(value)
+            if type(value) ~= 'table' then return value end
+            if seen[value] then return seen[value] end
+            local result = {}
+            seen[value] = result
+            for key, child in pairs(value) do result[key] = copy(child) end
+            return result
+        end
+        carti163 = copy(carti162)
+    end
     carti23.predict(carti60, action(carti163))
 end
-
--- ==================== PERSIST SPAWNED PETS ====================
-local CARTI_HUB_PETS_FILE = 'CartiHub_SpawnedPets.json'
-
-carti_saveSpawnedPets = function()
-    pcall(function()
-        local inv = carti23.get('inventory')
-        local spawnedPets = {}
-        if inv and inv.pets then
-            for unique, pet in pairs(inv.pets) do
-                if pet and pet.carti_hub_local_pet then
-                    table.insert(spawnedPets, {
-                        kind = pet.kind,
-                        properties = pet.properties,
-                        newness_order = pet.newness_order,
-                    })
-                end
-            end
-        end
-        if writefile then
-            writefile(CARTI_HUB_PETS_FILE, carti7:JSONEncode(spawnedPets))
-        end
-    end)
-end
-
-carti_loadSpawnedPets = function()
-    pcall(function()
-        if not readfile then return end
-        local ok, content = pcall(readfile, CARTI_HUB_PETS_FILE)
-        if not ok or not content or content == '' then return end
-        local petsData = carti7:JSONDecode(content)
-        if not petsData or type(petsData) ~= 'table' or #petsData == 0 then return end
-        carti161('inventory', function(inv)
-            inv.pets = inv.pets or {}
-            for _, saved in ipairs(petsData) do
-                local newUnique = '2_' .. carti7:GenerateGUID(false)
-                inv.pets[newUnique] = {
-                    unique = newUnique,
-                    category = 'pets',
-                    carti_hub_local_pet = true,
-                    id = saved.kind,
-                    kind = saved.kind,
-                    properties = saved.properties or {
-                        rideable = false,
-                        flyable = false,
-                        neon = false,
-                        mega_neon = false,
-                        pet_trick_level = 0,
-                        friendship_level = 0,
-                        age = 1,
-                    },
-                    newness_order = saved.newness_order or (os.time() * 1000),
-                }
-            end
-            return inv
-        end)
-        task.defer(function()
-            if carti154.organizeSpawnedPets then
-                carti154.organizeSpawnedPets(carti53)
-            end
-        end)
-    end)
-end
-
-carti_clearSavedPets = function()
-    pcall(function()
-        if writefile then
-            writefile(CARTI_HUB_PETS_FILE, '[]')
-        end
-    end)
-end
-
 
 local carti164 = { running = false, checkInterval = 0.3, animationTracks = {} }
 
 function carti164:Start()
     if self.running then return end
     self.running = true
+    self.generation = (self.generation or 0) + 1
+    local generation = self.generation
     task.spawn(function()
-        while self.running do
+        while self.running and self.generation == generation do
             task.wait(self.checkInterval)
-            for _, carti147 in ipairs(carti160) do
-                if carti147 and carti147.model and carti147.model.Parent then
+            if not self.running or self.generation ~= generation then break end
+            for _, carti147 in pairs(carti154.npcRecords or {}) do
+                if not carti147.disposed and carti147.character and carti147.character.Parent then
                     pcall(function()
-                        local carti165 = carti147.character
-                        if carti165 and carti165.Parent then
-                            local carti166 = carti165:FindFirstChild('Humanoid')
-                            if carti166 then
-                                local carti167 = carti166:FindFirstChild('Animator')
-                                if carti167 then
-                                    local carti168 = false
-                                    for _, carti190 in ipairs(carti167:GetPlayingAnimationTracks()) do
-                                        if carti190.Animation.AnimationId:find('PlayerRidingPet') or carti190.Animation.AnimationId:find('507766666') then carti168 = true break end
-                                    end
-                                    if not carti168 and carti147.hasRidingPet then
-                                        if not carti147.ridingAnim or not carti147.ridingAnim.IsPlaying then
-                                            if carti147.ridingAnim then carti147.ridingAnim:Stop() end
-                                            carti147.ridingAnim = carti167:LoadAnimation(carti28.get_track('PlayerRidingPet'))
-                                            carti147.ridingAnim.Looped = true
-                                            carti147.ridingAnim:Play()
-                                            carti166.Sit = true
-                                        end
-                                    end
-                                end
-                            end
+                        if carti147.ridingAnim and not carti147.ridingAnim.IsPlaying then
+                            carti147.ridingAnim:Play(0.1)
                         end
-                        if carti147.wrapper.mega_neon then carti144(carti147.model, carti147.wrapper.pet_id)
-                        elseif carti147.wrapper.neon then carti153(carti147.model, carti147.wrapper.pet_id) end
+                        if carti147.hasRidingPet then carti147.character.Humanoid.Sit = true end
                     end)
                 end
             end
@@ -1830,6 +1536,7 @@ end
 
 function carti164:Stop()
     self.running = false
+    self.generation = (self.generation or 0) + 1
     for _, carti147 in ipairs(carti160) do
         if carti147.ridingAnim then carti147.ridingAnim:Stop() end
     end
@@ -1866,216 +1573,365 @@ task.spawn(function()
         if interactionData and interactionData.part then
             local carti172 = interactionData.part
             while carti172 do
-                if carti172:GetAttribute('IsFakePet') == true and carti172.Parent then return end
+                if carti172:GetAttribute('IsFakePet') == true and carti172.Parent then
+                    -- Native callers retain and later destroy every registration.
+                    return {destroy = function() end}
+                end
                 carti172 = carti172.Parent
             end
         end
         return carti171(self, interactionData)
     end
+    cartiRuntime:OwnHooks(carti170, {register = carti171})
 end)
 
-local carti173 = 'regular'
 
-function CreateFakePlayerCharacterFromPARTNER_NAME(partner_name, partner_id, pros_fake_pet, pet_flags, rideMode)
-    local carti174, carti175 = 3, 0
+-- BEGIN OWNED NPC SPAWNER
+-- Embedded in cartiadm.lua. Each NPC owns its rig, pet, animation and cleanup.
+carti154.npcRecords = {}
+carti154.npcPendingRecords = {}
+carti154.npcGeneration = 0
+carti154.npcAvatarCache = {}
+carti154.npcAvatarOrder = {}
+carti154.noclipConnections = setmetatable({}, {__mode = 'k'})
 
-    local function carti176()
-        carti175 = carti175 + 1
-        carti8[partner_id] = true
-        _G.fakePlayerIds[partner_id] = true
+carti154.nextLocalWrapperId = function()
+    carti154.localWrapperSequence = (carti154.localWrapperSequence or -math.floor(os.clock() * 1000000)) - 1
+    return carti154.localWrapperSequence
+end
 
-        local carti177 = Instance.new('Folder')
-        carti177.Name = 'fake_folder_' .. partner_name
-        carti177.Parent = workspace
+carti154.cleanupNPC = function(record)
+    if not record or record.disposed then return end
+    record.disposed = true
+    carti154.npcPendingRecords[record] = nil
+    if record.destroyConnection then record.destroyConnection:Disconnect() end
+    if record.interaction then pcall(function() record.interaction:destroy() end) end
+    if record.ridingAnim then
+        pcall(function() record.ridingAnim:Stop(0); record.ridingAnim:Destroy() end)
+    end
+    if record.animation then record.animation:Destroy() end
+    if record.model then
+        pcall(function() carti20('PetEntityManager').remove_pet_entity_by_char(record.model) end)
+        pcall(function() carti20('CharWrapperClient').register_debug_wrapper(record.model, nil) end)
+    end
+    if record.folder then carti154.npcRecords[record.folder] = nil end
+    for i = #carti160, 1, -1 do if carti160[i] == record then table.remove(carti160, i) end end
+    for i = #carti159, 1, -1 do if carti159[i] == record.folder then table.remove(carti159, i) end end
+    if record.folder then record.folder:Destroy() end
+    if record.character then record.character:Destroy() end
+    local stillUsed = false
+    for _, other in pairs(carti154.npcRecords) do
+        if other.partnerId == record.partnerId then stillUsed = true; break end
+    end
+    if not stillUsed and record.partnerId then carti8[record.partnerId] = nil end
+    if next(carti154.npcRecords) == nil then carti164:Stop() end
+end
 
-        local carti165 = carti2:CreateHumanoidModelFromUserId(partner_id)
-        local carti178 = carti2.LocalPlayer.Character
-        carti165:SetPrimaryPartCFrame(carti178.HumanoidRootPart.CFrame * CFrame.new(math.random(-10, 10), 0, math.random(-10, 10)))
-        local carti166 = carti165:WaitForChild('Humanoid')
-        carti166.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-        carti166.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-        carti166.HealthDisplayDistance = 0
-        carti165.Parent = carti177
+carti154.cancelNPCSpawns = function()
+    carti154.npcGeneration += 1
+end
 
-        if pros_fake_pet ~= nil then
-            local carti179 = false
-            local carti12, carti128 = pcall(function()
-                local carti180 = pros_fake_pet.kind
-                local carti181 = carti42(carti180)
-                if not carti181 then warn('Could not get pet model for kind:', carti180) return end
-                carti181 = carti181:Clone()
-                carti181:SetAttribute('IsFakePet', true)
-                if pet_flags then
-                    if pet_flags.M then carti144(carti181, carti180)
-                    elseif pet_flags.N then carti153(carti181, carti180) end
-                end
-                carti181.Parent = carti177
-                carti181:SetPrimaryPartCFrame(carti165.HumanoidRootPart.CFrame)
-                carti181:ScaleTo(2)
-                for _, part in ipairs(carti181:GetDescendants()) do
-                    if part:IsA('BasePart') then part:SetAttribute('IsFakePet', true) end
-                end
-                if rideMode == 'beside' then
-                    -- Pet stands beside the player (not riding)
-                    carti181:SetPrimaryPartCFrame(carti165.HumanoidRootPart.CFrame * CFrame.new(3, 0, 2))
-                    startBesidePetFollowing(carti181, carti165, Vector3.new(3, 0, 2))
-                else
-                    -- Default: player rides the pet
-                    local carti182 = carti181:FindFirstChild('RidePosition', true)
-                    if carti182 then
-                        local carti183 = Instance.new('Attachment')
-                        carti183.Parent = carti182
-                        carti183.Position = Vector3.new(0, 1.237, 0)
-                        carti183.Name = 'SourceAttachment'
-                        local carti184 = Instance.new('RigidConstraint')
-                        carti184.Name = 'StateConnection'
-                        carti184.Attachment0 = carti183
-                        carti184.Attachment1 = carti165.PrimaryPart.RootAttachment
-                        carti184.Parent = carti165
-                    end
-                    local carti185 = carti165.Humanoid.Animator:LoadAnimation(carti28.get_track('PlayerRidingPet'))
-                    carti185.Looped = true
-                    carti185:Play()
-                    carti165.Humanoid.Sit = true
-                    for _, descendant in pairs(carti165:GetDescendants()) do
-                        if descendant:IsA('BasePart') and descendant.Massless == false then
-                            descendant.Massless = true
-                            descendant:SetAttribute('HaveMass', true)
-                        end
-                    end
-                end
-                local carti186 = carti169(carti165, partner_name, partner_id)
-                local carti187 = {
-                    char = carti181, mega_neon = pet_flags and pet_flags.M or false, neon = pet_flags and pet_flags.N or false,
-                    player = carti186, entity_controller = carti186, controller = carti186, rp_name = '',
-                    pet_trick_level = math.random(1, 5), pet_unique = carti7:GenerateGUID(false), pet_id = carti180,
-                    location = { full_destination_id = 'housing', destination_id = 'housing', house_owner = carti186 },
-                    pet_progression = { age = math.random(1, 900000), percentage = math.random(0.01, 0.99) },
-                    are_colors_sealed = false, is_pet = true,
-                }
-                local carti188 = { char = carti181, player = carti186, store_key = 'pet_state_managers', is_sitting = false, chars_connected_to_me = {}, states = { { id = 'PetBeingRidden' } } }
-                carti161('pet_char_wrappers', function(petWrappers)
-                    carti187.unique = #petWrappers + 1
-                    carti187.index = #petWrappers + 1
-                    petWrappers[#petWrappers + 1] = carti187
-                    return petWrappers
-                end)
-                carti161('pet_state_managers', function(petStates)
-                    petStates[#petStates + 1] = carti188
-                    return petStates
-                end)
-                table.insert(carti160, {
-                    wrapper = carti187, state = carti188, model = carti181, character = carti165,
-                    hasRidingPet = (rideMode ~= 'beside'), owner = carti186, ridingAnim = (rideMode ~= 'beside') and carti185 or nil, folder = carti177,
-                })
-                if not carti164.running then carti164:Start() end
-                carti179 = true
-                print('✓ Registered fake pet with native game systems:', carti180, pet_flags and (pet_flags.M and 'Mega Neon' or pet_flags.N and 'Neon' or 'Regular') or 'Regular')
-            end)
-            if not carti12 or not carti179 then
-                warn('Error creating fake pet (Attempt ' .. carti175 .. '/' .. carti174 .. '):', carti128)
-                carti177:Destroy()
-                for i, folder in ipairs(carti159) do if folder == carti177 then table.remove(carti159, i) break end end
-                if carti175 < carti174 then
-                    print('🔄 Retrying fake character creation for ' .. partner_name .. '...')
-                    task.wait(0.5)
-                    return carti176()
-                else
-                    warn('❌ Failed to create fake character after ' .. carti174 .. ' attempts')
-                    return false
-                end
+carti154.clearNPCs = function()
+    carti154.cancelNPCSpawns()
+    carti164:Stop()
+    local records = {}
+    for _, record in pairs(carti154.npcRecords) do table.insert(records, record) end
+    for record in pairs(carti154.npcPendingRecords) do table.insert(records, record) end
+    for _, record in ipairs(records) do carti154.cleanupNPC(record) end
+    table.clear(carti159)
+    table.clear(carti160)
+    table.clear(carti8)
+    _G.fakePlayerIds = carti8
+end
+
+carti154.createNPCModel = function(userId)
+    local template = carti154.npcAvatarCache[userId]
+    if not template then
+        -- Adopt Me uses R15 even for accounts whose website avatar is R6.
+        local description = cartiRuntime:OwnInstance(carti2:GetHumanoidDescriptionFromUserIdAsync(userId))
+        local ok, model = pcall(function()
+            return carti2:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R15)
+        end)
+        description:Destroy()
+        if not ok then error(model) end
+        template = model
+        template.Archivable = true
+        carti154.npcAvatarCache[userId] = template
+        table.insert(carti154.npcAvatarOrder, userId)
+        if #carti154.npcAvatarOrder > 16 then
+            local oldest = table.remove(carti154.npcAvatarOrder, 1)
+            carti154.npcAvatarCache[oldest]:Destroy()
+            carti154.npcAvatarCache[oldest] = nil
+        end
+    end
+    return template:Clone()
+end
+
+carti154.getNPCPetFloorCFrame = function(record, frame)
+    local model = record.model
+    local root = assert(model:FindFirstChild('HumanoidRootPart'), 'Pet has no root.')
+    local humanoid = assert(model:FindFirstChildOfClass('Humanoid'), 'Pet has no humanoid.')
+    local ignored = {record.folder}
+    for _, player in ipairs(carti2:GetPlayers()) do
+        if player.Character then table.insert(ignored, player.Character) end
+    end
+    for folder in pairs(carti154.npcRecords) do table.insert(ignored, folder) end
+    for _, wrapper in pairs(carti23.get('pet_char_wrappers') or {}) do
+        if wrapper.char then table.insert(ignored, wrapper.char) end
+    end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignored
+    params.RespectCanCollide = true
+    params.IgnoreWater = true
+    local hit = workspace:Raycast(frame.Position + Vector3.new(0, 4, 0), Vector3.new(0, -128, 0), params)
+    if not hit then return frame end
+    local height = humanoid.HipHeight + root.Size.Y / 2
+    return CFrame.new(frame.X, hit.Position.Y + height, frame.Z) * frame.Rotation
+end
+
+carti154.supportNPCPet = function(record, frame)
+    local root = assert(record.model:FindFirstChild('HumanoidRootPart'), 'Pet has no root.')
+    frame = frame or root.CFrame
+    local support = record.support
+    if not support or not support.Parent then
+        support = Instance.new('Part')
+        record.support = support
+        support.Name = 'CartiAdmNPCSupport'
+        support.Size = Vector3.new(0.25, 0.25, 0.25)
+        support.Transparency = 1
+        support.CanCollide, support.CanTouch, support.CanQuery = false, false, false
+        support.Anchored = true
+        support.CFrame = frame
+        support.Parent = record.folder
+    end
+    local weld = support:FindFirstChildOfClass('WeldConstraint') or Instance.new('WeldConstraint')
+    weld.Enabled = false
+    support.Anchored = true
+    support.CFrame = frame
+    root.CFrame = frame
+    root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+    weld.Name = 'CartiAdmNPCSupportWeld'
+    weld.Part0, weld.Part1 = support, root
+    weld.Parent = support
+    weld.Enabled = true
+    -- Native CFrameSetter intentionally unanchors pet roots. A separate owned
+    -- support keeps this whole assembly stationary without fighting that system
+    -- or anchoring the animated limbs. Folder cleanup also owns this support.
+    root.Anchored = false
+end
+
+carti154.spawnNPC = function(partnerName, partnerId, pet, flags)
+    local generation = carti154.npcGeneration
+    while carti154.npcSpawning do
+        task.wait(0.05)
+        if generation ~= carti154.npcGeneration then return false, 'Spawn cancelled.' end
+    end
+    carti154.npcSpawning = true
+    local lastError
+    for attempt = 1, 3 do
+        local record = {partnerId = partnerId}
+        carti154.npcPendingRecords[record] = true
+        local ok, err = xpcall(function()
+            if not partnerId then partnerId = carti2:GetUserIdFromNameAsync(partnerName) end
+            record.partnerId = partnerId
+            assert(type(partnerId) == 'number' and partnerId > 0, 'Invalid player ID.')
+            local character = carti154.createNPCModel(partnerId)
+            if record.disposed or generation ~= carti154.npcGeneration then
+                character:Destroy()
+                error('Spawn cancelled.')
             end
-        else
-            local carti189 = Instance.new('Animation')
-            carti189.AnimationId = 'http://www.roblox.com/asset/?id=507766666'
-            local carti190 = carti165.Humanoid.Animator:LoadAnimation(carti189)
-            carti190.Looped = true
-            carti190:Play()
+            record.character = character
+            local folder = Instance.new('Folder')
+            record.folder = folder
+            folder.Name = 'fake_folder_' .. tostring(partnerName)
+            character.Parent = folder -- keep staged objects owned even if setup fails
+            local root = assert(character:FindFirstChild('HumanoidRootPart'), 'Avatar has no root.')
+            local humanoid = assert(character:FindFirstChildOfClass('Humanoid'), 'Avatar has no humanoid.')
+            character.PrimaryPart = root
+            local localRoot = carti2.LocalPlayer.Character and carti2.LocalPlayer.Character:FindFirstChild('HumanoidRootPart')
+            assert(localRoot, 'Wait for your character to finish spawning.')
+            character:PivotTo(localRoot.CFrame * CFrame.new(math.random(-10, 10), 0, math.random(-10, 10)))
+            humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+            humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+            humanoid.HealthDisplayDistance = 0
+            local animator = humanoid:FindFirstChildOfClass('Animator') or Instance.new('Animator', humanoid)
+            root.Anchored = true
+            if generation ~= carti154.npcGeneration then error('Spawn cancelled.') end
+            folder.Parent = workspace
+
+            if pet then
+                local petId = assert(pet.kind, 'The selected pet is unavailable.')
+                local petModel = assert(carti42(petId), 'Could not load pet: ' .. tostring(petId))
+                if record.disposed or generation ~= carti154.npcGeneration then
+                    petModel:Destroy()
+                    error('Spawn cancelled.')
+                end
+                record.model = petModel
+                petModel:SetAttribute('IsFakePet', true)
+                petModel.Parent = folder
+                local petRoot = assert(petModel:FindFirstChild('HumanoidRootPart'), 'Pet has no root.')
+                petModel.PrimaryPart = petRoot
+                for _, part in ipairs(petModel:GetDescendants()) do
+                    if part:IsA('BasePart') then part.Anchored = false end
+                end
+                local entry = assert(carti26.pets[petId], 'Unknown pet: ' .. tostring(petId))
+                petModel:ScaleTo(entry.max_ride_scale or 2)
+                petModel:PivotTo(carti154.getNPCPetFloorCFrame(record, root.CFrame))
+                carti154.supportNPCPet(record)
+                local mount = assert(petModel:FindFirstChild('RidePosition', true), 'Pet has no riding mount.')
+                local mountFrame = mount:IsA('Attachment') and mount.WorldCFrame or mount.CFrame
+                local source = Instance.new('Attachment')
+                source.Name = 'CartiAdmRiderSource'
+                source.CFrame = petRoot.CFrame:ToObjectSpace(mountFrame * CFrame.new(0, 1.237, 0))
+                source.Parent = petRoot
+                local target = Instance.new('Attachment')
+                target.Name = 'CartiAdmRiderTarget'
+                target.Parent = root
+                root.CFrame = source.WorldCFrame
+                local joint = Instance.new('RigidConstraint')
+                joint.Name = 'CartiAdmRiderConstraint'
+                joint.Attachment0 = source
+                joint.Attachment1 = target
+                joint.Parent = character
+                root.Anchored = false
+                humanoid.Sit = true
+                record.owner = carti169(character, partnerName, partnerId)
+                record.wrapper = {
+                    char = petModel, player = record.owner, controller = record.owner,
+                    entity_controller = record.owner, is_pet = true,
+                    pet_unique = 'cartiadm-npc-' .. carti7:GenerateGUID(false),
+                    unique = carti154.nextLocalWrapperId(), index = 1, pet_id = petId,
+                    rp_name = '', transform_mode = 1, are_colors_sealed = false,
+                    neon = flags and flags.N == true, mega_neon = flags and flags.M == true,
+                    pet_trick_level = 0, pet_progression = {age = 6, xp = 0, friendship_level = 0},
+                    location = {},
+                }
+                -- NPC pets are not the local player's equipped pets. Publishing them
+                -- in ClientData's equip arrays makes native equip reconciliation own them.
+                carti20('CharWrapperClient').register_debug_wrapper(petModel, record.wrapper)
+                carti20('PetEntityManager').create_pet_entity(petModel, entry)
+                if record.wrapper.neon or record.wrapper.mega_neon then
+                    carti20('PetNeonHelper').apply_neon(petModel.PetModel, entry.neon_parts)
+                end
+                record.ridingAnim = animator:LoadAnimation(carti28.get_track('PlayerRidingPet'))
+                record.ridingAnim.Priority = Enum.AnimationPriority.Action
+                record.hasRidingPet = true
+            else
+                record.animation = Instance.new('Animation')
+                record.animation.AnimationId = 'rbxassetid://507766666'
+                record.ridingAnim = animator:LoadAnimation(record.animation)
+                record.ridingAnim.Priority = Enum.AnimationPriority.Idle
+            end
+            record.ridingAnim.Looped = true
+            record.ridingAnim:Play(0.1)
+            if generation ~= carti154.npcGeneration then error('Spawn cancelled.') end
+            pcall(function() carti22.apps.PlayerNameApp:add_npc_id(character, partnerName) end)
+            record.interaction = carti20('InteractionsEngine'):register({
+                text = partnerName, part = root,
+                on_selected = {
+                    {text = 'Profile', on_selected = function() pcall(OpenProfile, partnerId) end},
+                    {text = 'Trade', on_selected = function()
+                        task.wait(carti69.FAKE_PLAYER_ACCEPT_TRADE_REQUEST)
+                        if record.disposed then return end
+                        partnerBox.Text = partnerName
+                        updatePartnerFromUsername(partnerName)
+                        carti127()
+                    end},
+                    {text = 'Give Item...', on_selected = function() end},
+                    {text = 'Mute', on_selected = function() end},
+                },
+            })
+            folder:SetAttribute('IsFakePlayer', true)
+            folder:SetAttribute('PartnerName', partnerName)
+            folder:SetAttribute('PartnerId', partnerId)
+            carti154.npcRecords[folder] = record
+            carti154.npcPendingRecords[record] = nil
+            table.insert(carti159, folder)
+            if record.model then table.insert(carti160, record) end
+            carti8[partnerId] = true
+            _G.fakePlayerIds = carti8
+            record.destroyConnection = cartiRuntime:Connect(folder.Destroying, function() carti154.cleanupNPC(record) end)
+            carti154.applyNPCNoclip(character)
+            if record.model then carti154.applyNPCNoclip(record.model) end
+            if not carti164.running then carti164:Start() end
+        end, debug.traceback)
+        if ok then
+            carti154.npcSpawning = false
+            carti154.npcLastError = nil
+            return true, record.folder
         end
-
-        pcall(function() carti22.apps.PlayerNameApp:add_npc_id(carti165, partner_name) end)
-
-        local carti191 = carti165:FindFirstChild('HumanoidRootPart')
-        if carti191 then
-            local carti170 = carti20('InteractionsEngine')
-            local carti192 = function() end
-            pcall(function()
-                carti170:register({
-                    text = partner_name, part = carti191,
-                    on_selected = {
-                        { text = 'Profile', on_selected = function() pcall(OpenProfile, partner_id) end },
-                        { text = 'Trade', on_selected = function()
-                            pcall(function()
-                                task.spawn(function()
-                                    pcall(function()
-                                        if carti32 then carti32:hint({ text = 'Trade request sent to ' .. partner_name, length = 3, overridable = true }) end
-                                    end)
-                                end)
-                                task.wait(carti69.FAKE_PLAYER_ACCEPT_TRADE_REQUEST)
-                                partnerBox.Text = partner_name
-                                updatePartnerFromUsername(partner_name)
-                                carti127()
-                            end)
-                        end },
-                        { text = 'Give Item...', on_selected = carti192 },
-                        { text = 'Mute', on_selected = carti192 },
-                    },
-                })
-            end)
-        end
-
-        table.insert(carti159, carti177)
-        carti177:SetAttribute('IsFakePlayer', true)
-        carti177:SetAttribute('PartnerName', partner_name)
-        carti177:SetAttribute('PartnerId', partner_id)
-        return true
+        lastError = tostring(err)
+        carti154.cleanupNPC(record)
+        if generation ~= carti154.npcGeneration then break end
+        if attempt < 3 then task.wait(0.5 * attempt) end
     end
-
-    return carti176()
+    carti154.npcSpawning = false
+    carti154.npcLastError = lastError
+    warn('[Carti ADM] Player spawn failed: ' .. tostring(lastError))
+    return false, lastError
 end
 
-function GetKindPet(carti130)
-    for k, carti152 in pairs(carti26.pets) do
-        if carti152['name']:lower() == carti130:lower() then return k end
-    end
+function CreateFakePlayerCharacterFromPARTNER_NAME(partnerName, partnerId, pet, flags)
+    return carti154.spawnNPC(partnerName, partnerId, pet, flags)
 end
 
-local function carti193(carti165)
-    if not carti165 then return end
-    for _, part in ipairs(carti165:GetDescendants()) do
-        if part:IsA('BasePart') then
-            part.CanCollide = false
-            part.CanTouch = false
-            part.CanQuery = false
-            pcall(function() part.CollisionGroup = 'Noclip' end)
+carti154.applyNPCNoclip = function(model)
+    if not model then return end
+    local state = carti154.noclipConnections[model]
+    if not state then
+        state = {parts = setmetatable({}, {__mode = 'k'})}
+        carti154.noclipConnections[model] = state
+        state.apply = function(part)
+            if not part:IsA('BasePart') then return end
+            local original = state.parts[part]
+            if carti154.noclipEnabled then
+                if not original then
+                    original = {part.CanCollide, part.CanTouch, part.CanQuery}
+                    state.parts[part] = original
+                end
+                part.CanCollide, part.CanTouch, part.CanQuery = false, false, false
+            elseif original then
+                part.CanCollide, part.CanTouch, part.CanQuery = table.unpack(original)
+                state.parts[part] = nil
+            end
         end
+        state.added = cartiRuntime:Connect(model.DescendantAdded, state.apply)
+        state.destroyed = cartiRuntime:Connect(model.Destroying, function()
+            state.added:Disconnect()
+            state.destroyed:Disconnect()
+            carti154.noclipConnections[model] = nil
+        end)
     end
-    carti165.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA('BasePart') then
-            task.wait()
-            descendant.CanCollide = false
-            descendant.CanTouch = false
-            descendant.CanQuery = false
-            pcall(function() descendant.CollisionGroup = 'Noclip' end)
-        end
-    end)
+    for _, part in ipairs(model:GetDescendants()) do state.apply(part) end
+end
+
+local function carti193(model)
+    carti154.applyNPCNoclip(model)
 end
 
 local function carti194()
     for _, folder in ipairs(carti159) do
-        if folder and folder.Parent then
-            for _, child in ipairs(folder:GetChildren()) do
-                if child:IsA('Model') then carti193(child) end
+        if folder.Parent then
+            for _, model in ipairs(folder:GetChildren()) do
+                if model:IsA('Model') then carti193(model) end
             end
         end
     end
 end
 
 local function carti195()
-    for _, carti147 in ipairs(carti160) do
-        if carti147 and carti147.model and carti147.model.Parent then carti193(carti147.model) end
+    for _, pet in ipairs(carti160) do
+        if pet.model and pet.model.Parent then carti193(pet.model) end
     end
 end
+
+function GetKindPet(name)
+    for id, entry in pairs(carti26.pets) do
+        if entry.name:lower() == tostring(name):lower() then return id end
+    end
+end
+-- END OWNED NPC SPAWNER
 
 -- ORIGINAL BlockPlayer function
 function BlockPlayer(Selected)
@@ -2107,56 +1963,23 @@ function BlockPlayer(Selected)
 end
 
 -- FIXED: Send trade request to real player using the correct API
-local function carti197(carti240)
-    if not carti240 then return end
-    local carti198 = carti2:FindFirstChild(carti240.Name)
-    if carti198 then
-        pcall(function()
-            local carti12 = false
-            if not carti12 then
-                pcall(function()
-                    local carti200 = carti25.get('TradeAPI/SendTradeRequest')
-                    if carti200 then
-                        if carti200.FireServer then
-                            carti200:FireServer(carti198)
-                            carti12 = true
-                        elseif carti200.InvokeServer then
-                            carti200:InvokeServer(carti198)
-                            carti12 = true
-                        end
-                    end
-                end)
-            end
-            if not carti12 then
-                pcall(function()
-                    local carti202 = carti3:FindFirstChild('Remotes') and carti3.Remotes:FindFirstChild('TradeAPI') and carti3.Remotes.TradeAPI:FindFirstChild('SendTradeRequest')
-                    if carti202 then
-                        carti202:FireServer(carti198)
-                        carti12 = true
-                    end
-                end)
-            end
-            if not carti12 then
-                pcall(function()
-                    local carti170 = carti20('InteractionsEngine')
-                    if carti170 then
-                        carti170:send_trade_request(carti198)
-                        carti12 = true
-                    end
-                end)
-            end
-            if carti12 and carti32 then
-                carti32:hint({ text = 'Trade request sent to ' .. carti240.Name, length = 3, overridable = true })
-            elseif carti32 then
-                carti32:hint({ text = 'Could not send trade request to ' .. carti240.Name, length = 3, overridable = true })
-            end
+local function carti197(requested)
+    local name = requested and requested.Name or ''
+    local player = carti2:FindFirstChild(name)
+    local ok, result = false, 'Player is no longer in this server'
+    if player then
+        ok, result = pcall(function()
+            local remote = carti25.get('TradeAPI/SendTradeRequest')
+            if remote:IsA('RemoteEvent') then remote:FireServer(player); return true end
+            if remote:IsA('RemoteFunction') then return remote:InvokeServer(player) end
+            error('Trade request endpoint is unavailable')
         end)
-    else
-        if carti32 then
-            carti32:hint({ text = 'Player ' .. carti240.Name .. ' not found in server', length = 3, overridable = true })
-        end
+        if ok and result == false then ok = false end
     end
+    if carti32 then carti32:hint({text = ok and ('Trade request sent to ' .. name) or ('Could not send request to ' .. name), length = 3, overridable = true}) end
+    return ok, result
 end
+
 
 -- ==================== AUTO SPECTATE WITH RANDOM VARIATION ====================
 local carti204 = nil
@@ -2164,42 +1987,23 @@ local carti204 = nil
 local function carti205()
     if carti204 then return end
     
-    spectateSequence = buildSpectateSequence(carti70)
-    spectateIndex = 2
-    currentSpectatorCount = 0
-    
-    if carti74.active and carti74.trade then
-        carti74.trade.subscriber_count = 0
-        carti74.trade.offer_version = carti74.trade.offer_version + 1
-        carti30:_overwrite_local_trade_state(carti74.trade)
-        if spectatorBox then spectatorBox.Text = '0' end
-    end
-    
-    local wasActive = carti74.active
-    
     carti204 = task.spawn(function()
         while carti69.AUTO_SPECTATE_ENABLED do
             task.wait(carti69.AUTO_SPECTATE_INTERVAL)
             
             if carti74.active and carti74.trade then
-                if not wasActive then
-                    spectateSequence = buildSpectateSequence(carti70)
-                    spectateIndex = 2
-                    currentSpectatorCount = 0
-                else
-                    currentSpectatorCount = carti71()
-                end
-                wasActive = true
+                -- Get a new random spectator count
+                local carti73 = carti71()
+                carti69.SPECTATOR_COUNT = carti73
                 
+                -- Update the spectator box text if it exists
                 if spectatorBox then
-                    spectatorBox.Text = tostring(currentSpectatorCount)
+                    spectatorBox.Text = tostring(carti73)
                 end
                 
-                carti74.trade.subscriber_count = currentSpectatorCount
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
+                -- Update the trade state
+                carti74.trade.subscriber_count = carti73
                 carti30:_overwrite_local_trade_state(carti74.trade)
-            else
-                wasActive = false
             end
         end
         carti204 = nil
@@ -2212,7 +2016,14 @@ end
 
 -- ==================== GUI CREATION ====================
 
+for _, carti206 in ipairs(carti2.LocalPlayer:WaitForChild('PlayerGui'):GetChildren()) do
+    if carti206.Name == 'MockTradeControl' then
+        carti206:Destroy()
+    end
+end
+
 local carti207 = Instance.new('ScreenGui')
+cartiRuntime:OnShutdown(function() carti207:Destroy() end)
 carti207.Name = 'MockTradeControl'
 carti207.ResetOnSpawn = false
 carti207.DisplayOrder = 10
@@ -2222,48 +2033,30 @@ carti207.Parent = carti2.LocalPlayer:WaitForChild('PlayerGui')
 local carti208 = Instance.new('Frame')
 carti208.Size = UDim2.new(0, 220, 0, 750)
 carti208.Position = UDim2.new(0, 10, 0, 10)
-carti208.BackgroundColor3 = Color3.fromRGB(13, 13, 13)
+carti208.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
 carti208.BorderSizePixel = 0
 carti208.ZIndex = 1
 carti208.Active = true
-carti208.ClipsDescendants = true
 carti208.Parent = carti207
 
 local carti209 = Instance.new('UICorner')
-carti209.CornerRadius = UDim.new(0, 8)
+carti209.CornerRadius = UDim.new(0, 6)
 carti209.Parent = carti208
-
-local carti208Padding = Instance.new('UIPadding')
-carti208Padding.PaddingTop = UDim.new(0, 6)
-carti208Padding.PaddingBottom = UDim.new(0, 6)
-carti208Padding.PaddingLeft = UDim.new(0, 6)
-carti208Padding.PaddingRight = UDim.new(0, 6)
-carti208Padding.Parent = carti208
 
 local carti210 = Instance.new('UIStroke')
 carti210.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-carti210.Color = Color3.fromRGB(255, 34, 34)
+carti210.Color = Color3.fromRGB(100, 100, 255)
 carti210.Thickness = 1.5
 carti210.Parent = carti208
-
-task.spawn(function()
-    while carti210.Parent do
-        carti6:Create(carti210, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-            Color = Color3.fromRGB(255, 34, 34):Lerp(Color3.fromRGB(255, 120, 120), 0.4),
-            Thickness = 1.8
-        }):Play()
-        task.wait(2)
-    end
-end)
 
 local carti211 = Instance.new('TextLabel')
 carti211.Size = UDim2.new(1, 0, 0, 22)
 carti211.Position = UDim2.new(0, 0, 0, 2)
 carti211.BackgroundTransparency = 1
-carti211.Text = 'MRX'
+carti211.Text = 't.me/cartiscripts'
 carti211.Font = Enum.Font.FredokaOne
 carti211.TextSize = 12
-carti211.TextColor3 = Color3.fromRGB(255, 60, 60)
+carti211.TextColor3 = Color3.fromRGB(240, 240, 255)
 carti211.Parent = carti208
 
 local carti212 = Instance.new('UIStroke')
@@ -2271,8 +2064,6 @@ carti212.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 carti212.Color = Color3.new(0, 0, 0)
 carti212.Thickness = 0.8
 carti212.Parent = carti211
-
-SetupWindowControls(carti208, carti211)
 
 local carti213 = Instance.new('Frame')
 carti213.Size = UDim2.new(0.94, 0, 0, 54)
@@ -2288,9 +2079,9 @@ function setActiveTab(tabName)
     for carti130, carti162 in pairs(carti156) do
         local carti214 = carti130 == tabName
         carti6:Create(carti162.button, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-            BackgroundColor3 = carti214 and Color3.fromRGB(45, 0, 0) or Color3.fromRGB(22, 22, 22)
+            BackgroundColor3 = carti214 and Color3.fromRGB(50, 50, 60) or Color3.fromRGB(40, 40, 50)
         }):Play()
-        local carti215 = carti214 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+        local carti215 = carti214 and Color3.fromRGB(100, 100, 255) or Color3.fromRGB(80, 80, 80)
         carti6:Create(carti162.stroke, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
             Color = carti215, Thickness = carti214 and 1.2 or 0.8
         }):Play()
@@ -2306,13 +2097,13 @@ function setActiveTab(tabName)
 end
 
 local carti216 = { 'Control', 'Players', 'Pets', 'Users', 'Sets', 'Inventory' }
-local carti217 = { '', '', '', '', '' }
+local carti217 = { '🎮', '👥', '🐾', '🧑', '⚙️' }
 
 for i, tabName in ipairs(carti216) do
     local carti218 = Instance.new('TextButton')
     carti218.Size = UDim2.new(1 / 3 - 0.02, 0, 0, 24)
     carti218.Position = UDim2.new(((i - 1) % 3) * (1 / 3), 0, 0, math.floor((i - 1) / 3) * 28)
-    carti218.BackgroundColor3 = i == 1 and Color3.fromRGB(45, 0, 0) or Color3.fromRGB(22, 22, 22)
+    carti218.BackgroundColor3 = i == 1 and Color3.fromRGB(50, 50, 60) or Color3.fromRGB(40, 40, 50)
     carti218.BackgroundTransparency = 0.2
     carti218.Text = (carti217[i] or utf8.char(0x1F4D6)) .. ' ' .. tabName
     carti218.Font = Enum.Font.FredokaOne
@@ -2321,12 +2112,12 @@ for i, tabName in ipairs(carti216) do
     carti218.Parent = carti213
 
     local carti219 = Instance.new('UICorner')
-    carti219.CornerRadius = UDim.new(0, 6)
+    carti219.CornerRadius = UDim.new(0, 4)
     carti219.Parent = carti218
 
     local carti220 = Instance.new('UIStroke')
     carti220.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti220.Color = i == 1 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+    carti220.Color = i == 1 and Color3.fromRGB(100, 100, 255) or Color3.fromRGB(80, 80, 80)
     carti220.Thickness = i == 1 and 1.2 or 0.8
     carti220.Transparency = 0.3
     carti220.Parent = carti218
@@ -2334,37 +2125,36 @@ for i, tabName in ipairs(carti216) do
     carti156[tabName] = { button = carti218, stroke = carti220 }
 
     -- Make Control tab a ScrollingFrame for better visibility
-    local carti221                           -- declare once
-    carti221 = Instance.new('ScrollingFrame') -- assign (no 'if' around it)
-    carti221.Size = UDim2.new(0.9, 0, 1, -86)
-    carti221.Position = UDim2.new(0.05, 0, 0, 82)
-    carti221.BackgroundTransparency = 1
-    carti221.BorderSizePixel = 0
-    carti221.ScrollBarThickness = 4
-    carti221.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
-    carti221.ScrollBarImageTransparency = 0.5
-    carti221.CanvasSize = UDim2.new(0, 0, 0, 0)
-    carti221.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    carti221.ScrollingDirection = Enum.ScrollingDirection.Y
-    carti221.ClipsDescendants = true
-    carti221.Visible = (i == 1)              -- only the first tab is visible at start
-    carti221.Parent = carti208
+    local carti221
+    if tabName == 'Control' then
+        carti221 = Instance.new('ScrollingFrame')
+        carti221.Size = UDim2.new(0.9, 0, 0, 644)
+        carti221.Position = UDim2.new(0.05, 0, 0, 82)
+        carti221.BackgroundTransparency = 1
+        carti221.BorderSizePixel = 0
+        carti221.ScrollBarThickness = 4
+        carti221.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
+        carti221.ScrollBarImageTransparency = 0.5
+        carti221.CanvasSize = UDim2.new(0, 0, 0, 850)
+        carti221.Visible = i == 1
+        carti221.Parent = carti208
+    else
+        carti221 = Instance.new('Frame')
+        carti221.Size = UDim2.new(0.9, 0, 0, 644)
+        carti221.Position = UDim2.new(0.05, 0, 0, 82)
+        carti221.BackgroundTransparency = 1
+        carti221.Visible = i == 1
+        carti221.Parent = carti208
+    end
 
-    carti155[tabName] = carti221 
+    carti155[tabName] = carti221
 
-        carti218.MouseButton1Click:Connect(function() setActiveTab(tabName) end)
-
-    carti218.MouseEnter:Connect(function()
-        carti6:Create(carti218, TweenInfo.new(0.15), { BackgroundTransparency = 0.05 }):Play()
-    end)
-    carti218.MouseLeave:Connect(function()
-        carti6:Create(carti218, TweenInfo.new(0.15), { BackgroundTransparency = 0.2 }):Play()
-    end)
+    cartiRuntime:Connect(carti218.MouseButton1Click, function() setActiveTab(tabName) end)
 end
 
 -- ==================== CONTROL TAB ====================
 local carti222 = carti155['Control']
-do
+
 local carti223 = Instance.new('UIListLayout')
 carti223.SortOrder = Enum.SortOrder.LayoutOrder
 carti223.Padding = UDim.new(0, 4)
@@ -2384,13 +2174,13 @@ function createSettingRow(labelText, defaultValue, parent)
     carti225.Text = labelText
     carti225.Font = Enum.Font.SourceSansSemibold
     carti225.TextSize = 10
-    carti225.TextColor3 = Color3.fromRGB(136, 136, 136)
+    carti225.TextColor3 = Color3.fromRGB(180, 180, 180)
     carti225.TextXAlignment = Enum.TextXAlignment.Left
     carti225.Parent = parent
 
     local carti226 = Instance.new('TextBox')
     carti226.Size = UDim2.new(1, 0, 0, 24)
-    carti226.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+    carti226.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
     carti226.BackgroundTransparency = 0.2
     carti226.Text = tostring(defaultValue)
     carti226.Font = Enum.Font.SourceSans
@@ -2401,27 +2191,27 @@ function createSettingRow(labelText, defaultValue, parent)
     carti226.Parent = parent
 
     local carti227 = Instance.new('UICorner')
-    carti227.CornerRadius = UDim.new(0, 6)
+    carti227.CornerRadius = UDim.new(0, 4)
     carti227.Parent = carti226
 
     local carti228 = Instance.new('UIStroke')
     carti228.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti228.Color = Color3.fromRGB(60, 60, 60)
+    carti228.Color = Color3.fromRGB(100, 100, 100)
     carti228.Thickness = 0.8
     carti228.Transparency = 0.5
     carti228.Parent = carti226
 
-    carti226.Focused:Connect(function()
+    cartiRuntime:Connect(carti226.Focused, function()
         if carti154.pulsationTweens[carti226] then carti154.pulsationTweens[carti226]:Cancel() end
         carti154.pulsationTweens[carti226] = carti6:Create(carti228, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-            Color = Color3.fromRGB(255, 34, 34):Lerp(Color3.fromRGB(255, 120, 120), 0.5), Thickness = 1.2, Transparency = 0.2
+            Color = Color3.fromRGB(100, 100, 255):Lerp(Color3.fromRGB(150, 150, 255), 0.5), Thickness = 1.2, Transparency = 0.2
         })
         carti154.pulsationTweens[carti226]:Play()
     end)
 
-    carti226.FocusLost:Connect(function()
+    cartiRuntime:Connect(carti226.FocusLost, function()
         if carti154.pulsationTweens[carti226] then carti154.pulsationTweens[carti226]:Cancel() carti154.pulsationTweens[carti226] = nil end
-        carti6:Create(carti228, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Color = Color3.fromRGB(60, 60, 60), Thickness = 0.8, Transparency = 0.5 }):Play()
+        carti6:Create(carti228, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Color = Color3.fromRGB(100, 100, 100), Thickness = 0.8, Transparency = 0.5 }):Play()
     end)
 
     return carti226, carti228, carti225
@@ -2431,44 +2221,31 @@ partnerBox, partnerStroke = createSettingRow('Partner Username', carti69.PARTNER
 local carti229 = createSettingRow('Accept Delay (s)', carti69.AUTO_ACCEPT_DELAY, carti222)
 local carti230 = createSettingRow('Confirm Delay (s)', carti69.AUTO_CONFIRM_DELAY, carti222)
 spectatorBox = createSettingRow('Spectator Count', carti69.SPECTATOR_COUNT, carti222)
-spectatorDelayBox = createSettingRow('Spectator Delay (s)', carti69.AUTO_SPECTATE_INTERVAL, carti222)
 local carti231 = createSettingRow('Request Delay (s)', carti69.TRADE_REQUEST_DELAY, carti222)
 
-partnerBox.FocusLost:Connect(function() updatePartnerFromUsername(partnerBox.Text) end)
-carti229.FocusLost:Connect(function()
+cartiRuntime:Connect(partnerBox.FocusLost, function() updatePartnerFromUsername(partnerBox.Text) end)
+cartiRuntime:Connect(carti229.FocusLost, function()
     local carti232 = tonumber(carti229.Text)
     if carti232 and carti232 >= 0 then carti69.AUTO_ACCEPT_DELAY = carti232 else carti229.Text = tostring(carti69.AUTO_ACCEPT_DELAY) end
 end)
-carti230.FocusLost:Connect(function()
+cartiRuntime:Connect(carti230.FocusLost, function()
     local carti232 = tonumber(carti230.Text)
     if carti232 and carti232 >= 0 then carti69.AUTO_CONFIRM_DELAY = carti232 else carti230.Text = tostring(carti69.AUTO_CONFIRM_DELAY) end
 end)
-spectatorBox.FocusLost:Connect(function()
+cartiRuntime:Connect(spectatorBox.FocusLost, function()
     local carti232 = tonumber(spectatorBox.Text)
     if carti232 and carti232 >= 0 then
         carti69.SPECTATOR_COUNT = carti232
         carti70 = carti232
-        if carti69.AUTO_SPECTATE_ENABLED then
-            spectateSequence = buildSpectateSequence(carti70)
-            spectateIndex = 2
-            currentSpectatorCount = 0
-        else
-            currentSpectatorCount = carti232
-            if carti74.trade then
-                carti74.trade.subscriber_count = carti232
-                if carti30.refresh_all then carti30:refresh_all() carti37(false) end
-            end
+        if carti74.trade then
+            carti74.trade.subscriber_count = carti232
+            if carti30.refresh_all then carti30:refresh_all() carti37(true) end
         end
     else
         spectatorBox.Text = tostring(carti69.SPECTATOR_COUNT)
     end
 end)
-
-spectatorDelayBox.FocusLost:Connect(function()
-    local carti232 = tonumber(spectatorDelayBox.Text)
-    if carti232 and carti232 > 0 then carti69.AUTO_SPECTATE_INTERVAL = carti232 else spectatorDelayBox.Text = tostring(carti69.AUTO_SPECTATE_INTERVAL) end
-end)
-carti231.FocusLost:Connect(function()
+cartiRuntime:Connect(carti231.FocusLost, function()
     local carti232 = tonumber(carti231.Text)
     if carti232 and carti232 >= 0 then carti69.TRADE_REQUEST_DELAY = carti232 else carti231.Text = tostring(carti69.TRADE_REQUEST_DELAY) end
 end)
@@ -2484,7 +2261,7 @@ local function carti233(text, bgColor, strokeColor, parent, onClick)
     carti234.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti234.Parent = parent
     local carti227 = Instance.new('UICorner')
-    carti227.CornerRadius = UDim.new(0, 6)
+    carti227.CornerRadius = UDim.new(0, 4)
     carti227.Parent = carti234
     local carti228 = Instance.new('UIStroke')
     carti228.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -2492,24 +2269,7 @@ local function carti233(text, bgColor, strokeColor, parent, onClick)
     carti228.Thickness = 1.0
     carti228.Transparency = 0.3
     carti228.Parent = carti234
-    if onClick then
-        carti234.MouseButton1Click:Connect(function()
-            carti6:Create(carti234, TweenInfo.new(0.05, Enum.EasingStyle.Quad), { Size = UDim2.new(1, 0, 0, 24) }):Play()
-            task.wait(0.05)
-            carti6:Create(carti234, TweenInfo.new(0.15, Enum.EasingStyle.Quad), { Size = UDim2.new(1, 0, 0, 26) }):Play()
-            onClick()
-        end)
-    end
-
-    carti234.MouseEnter:Connect(function()
-        carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundTransparency = 0.05 }):Play()
-        carti6:Create(carti228, TweenInfo.new(0.15), { Transparency = 0.15 }):Play()
-    end)
-    carti234.MouseLeave:Connect(function()
-        carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundTransparency = 0.2 }):Play()
-        carti6:Create(carti228, TweenInfo.new(0.15), { Transparency = 0.3 }):Play()
-    end)
-
+    if onClick then cartiRuntime:Connect(carti234.MouseButton1Click, onClick) end
     return carti234, carti228
 end
 
@@ -2526,57 +2286,55 @@ carti235(carti222, 4)
 -- AUTO SPECTATE BUTTON WITH RANDOM VARIATION - PROMINENT PLACEMENT
 local carti237 = Instance.new('TextButton')
 carti237.Size = UDim2.new(1, 0, 0, 32)
-carti237.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+carti237.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
 carti237.BackgroundTransparency = 0.1
-carti237.Text = 'Auto Spectate: OFF'
+carti237.Text = '🎲 Auto Spectate: OFF'
 carti237.Font = Enum.Font.FredokaOne
 carti237.TextSize = 13
 carti237.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti237.Parent = carti222
 local carti238 = Instance.new('UICorner')
-carti238.CornerRadius = UDim.new(0, 6)
+carti238.CornerRadius = UDim.new(0, 4)
 carti238.Parent = carti237
 local carti239 = Instance.new('UIStroke')
 carti239.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-carti239.Color = Color3.fromRGB(80, 80, 80)
+carti239.Color = Color3.fromRGB(255, 100, 100)
 carti239.Thickness = 1.5
 carti239.Parent = carti237
-carti237.MouseEnter:Connect(function()
-    carti6:Create(carti237, TweenInfo.new(0.15), { BackgroundTransparency = 0.0 }):Play()
-end)
-carti237.MouseLeave:Connect(function()
-    carti6:Create(carti237, TweenInfo.new(0.15), { BackgroundTransparency = 0.1 }):Play()
-end)
 
-carti237.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti237.MouseButton1Click, function()
     carti69.AUTO_SPECTATE_ENABLED = not carti69.AUTO_SPECTATE_ENABLED
     
     if carti69.AUTO_SPECTATE_ENABLED then
-        carti237.Text = 'Auto Spectate: ON'
-        carti237.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
-        carti239.Color = Color3.fromRGB(255, 34, 34)
+        carti237.Text = '🎲 Auto Spectate: ON (Random)'
+        carti237.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+        carti239.Color = Color3.fromRGB(100, 255, 100)
         
+        -- Store the current spectator count as the base
         carti70 = carti69.SPECTATOR_COUNT
+        
+        -- Start the auto spectate loop
         carti205()
+        
+        if carti32 then
+            carti32:hint({ text = 'Auto Spectate ON! Range: ' .. (carti70 + carti69.SPECTATOR_VARIATION_MIN) .. '-' .. (carti70 + carti69.SPECTATOR_VARIATION_MAX), length = 3, overridable = true })
+        end
     else
-        carti237.Text = 'Auto Spectate: OFF'
-        carti237.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
-        carti239.Color = Color3.fromRGB(80, 80, 80)
+        carti237.Text = '🎲 Auto Spectate: OFF'
+        carti237.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+        carti239.Color = Color3.fromRGB(255, 100, 100)
         
         carti206()
-        currentSpectatorCount = carti69.SPECTATOR_COUNT
-        if spectatorBox then spectatorBox.Text = tostring(carti69.SPECTATOR_COUNT) end
-        if carti74.trade then
-            carti74.trade.subscriber_count = carti69.SPECTATOR_COUNT
-            carti74.trade.offer_version = carti74.trade.offer_version + 1
-            carti30:_overwrite_local_trade_state(carti74.trade)
+        
+        if carti32 then
+            carti32:hint({ text = 'Auto Spectate OFF', length = 2, overridable = true })
         end
     end
 end)
 
 carti235(carti222)
 
-carti233('Add Random Item', Color3.fromRGB(139, 0, 0), Color3.fromRGB(255, 34, 34), carti222, function()
+carti233('Add Random Item', Color3.fromRGB(100, 50, 150), Color3.fromRGB(200, 100, 255), carti222, function()
     if carti74.active and carti74.trade then
         carti105(carti80(), carti111())
     end
@@ -2584,22 +2342,15 @@ end)
 
 carti235(carti222)
 
-carti233('Clear Trade', Color3.fromRGB(80, 0, 0), Color3.fromRGB(180, 0, 0), carti222, function()
-    if carti74.active and carti74.trade then
-        carti74.trade.sender_offer.items = {}
-        carti74.trade.recipient_offer.items = {}
-        carti74.trade.sender_offer.negotiated = false
-        carti74.trade.recipient_offer.negotiated = false
-        carti74.trade.current_stage = 'negotiation'
-        carti74.trade.offer_version = carti74.trade.offer_version + 1
-        carti30:_overwrite_local_trade_state(carti74.trade)
-    end
+carti233('Clear Trade', Color3.fromRGB(150, 50, 50), Color3.fromRGB(255, 100, 100), carti222, function()
+    carti74.resetOffer(true)
 end)
+
 
 carti235(carti222)
 
 -- FIXED: Start Trade button now uses the direct function
-carti233('Start Trade', Color3.fromRGB(0, 100, 50), Color3.fromRGB(0, 200, 100), carti222, function()
+carti233('Start Trade', Color3.fromRGB(50, 80, 60), Color3.fromRGB(0, 255, 100), carti222, function()
     if carti74.active or carti74.pendingTradeRequest then return end
     
     if carti69.SHOW_TRADE_REQUEST then
@@ -2609,7 +2360,7 @@ carti233('Start Trade', Color3.fromRGB(0, 100, 50), Color3.fromRGB(0, 200, 100),
     end
 end)
 
-carti233('Block Player', Color3.fromRGB(80, 0, 0), Color3.fromRGB(180, 0, 0), carti222, function()
+carti233('Block Player', Color3.fromRGB(150, 50, 50), Color3.fromRGB(255, 100, 100), carti222, function()
     local carti240 = carti2:FindFirstChild(partnerBox.Text)
     if carti240 then BlockPlayer(carti240) end
 end)
@@ -2617,147 +2368,208 @@ end)
 carti235(carti222)
 
 function makePartnerAccept()
-    if carti74.active and carti74.trade then
-        if carti74.trade.current_stage == 'negotiation' then
-            if not carti74.trade.recipient_offer.negotiated then
-                carti74.trade.recipient_offer.negotiated = true
-                if carti74.trade.sender_offer.negotiated then
-                    carti74.trade.current_stage = 'confirmation'
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    carti30:_overwrite_local_trade_state(carti74.trade)
-                    if carti30._evaluate_trade_fairness then carti30:_evaluate_trade_fairness() end
-                    if carti30._lock_trade_for_appropriate_time then carti30:_lock_trade_for_appropriate_time() end
-                else
-                    carti74.trade.offer_version = carti74.trade.offer_version + 1
-                    carti30:_overwrite_local_trade_state(carti74.trade)
-                end
-            end
-        elseif carti74.trade.current_stage == 'confirmation' then
-            if not carti74.trade.recipient_offer.confirmed then
-                carti74.trade.recipient_offer.confirmed = true
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                carti30:_overwrite_local_trade_state(carti74.trade)
-                if carti74.trade.sender_offer.confirmed and not carti74.tradeCompleting then
-                    carti74.tradeCompleting = true
-                    if carti30._set_confirmation_arrow_rotating then carti30:_set_confirmation_arrow_rotating(true) end
-                    task.wait(3)
-                    local carti120 = carti95(carti74.trade)
-                    carti96(carti120)
-                    carti74.active = false
-                    carti74.trade = nil
-                    carti74.tradeCompleting = false
-                    carti74.scamWarningShown = true
-                    carti74.canShowTradeRequest = true
-                    carti74.tradeRequestBlocked = false
-                    carti22.set_app_visibility('TradeApp', false)
-                    task.wait(0.1)
-                    carti118()
-                    if carti32 then carti32:hint({ text = 'The trade was successful!', length = 5, overridable = true }) end
-                    if carti34 and carti22.is_visible('TradeHistoryApp') then carti34:_refresh() end
-                end
-            end
+    local trade = carti74.trade
+    if not carti74.active or not trade or carti74.isLocked() then return end
+    if carti74.tradeCompleting then return end
+    if trade.current_stage == 'negotiation' then
+        if trade.recipient_offer.negotiated then return end
+        trade.recipient_offer.negotiated = true
+        if trade.sender_offer.negotiated then
+            trade.current_stage = 'confirmation'
+            trade.sender_offer.confirmed, trade.recipient_offer.confirmed = false, false
         end
+        trade.offer_version += 1
+        carti30:_overwrite_local_trade_state(trade)
+        if trade.current_stage == 'confirmation' then carti30:_lock_trade_for_appropriate_time() end
+    elseif trade.current_stage == 'confirmation' then
+        if trade.recipient_offer.confirmed then carti74.finishIfReady(); return end
+        trade.recipient_offer.confirmed = true
+        trade.offer_version += 1
+        carti30:_overwrite_local_trade_state(trade)
+        carti74.finishIfReady()
     end
 end
 
 function makePartnerUnaccept()
-    if carti74.active and carti74.trade then
-        if carti74.trade.current_stage == 'negotiation' then
-            if carti74.trade.recipient_offer.negotiated then
-                carti74.trade.recipient_offer.negotiated = false
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                carti30:_overwrite_local_trade_state(carti74.trade)
-            end
-        elseif carti74.trade.current_stage == 'confirmation' then
-            if carti74.trade.recipient_offer.confirmed then
-                carti74.trade.recipient_offer.confirmed = false
-                carti74.trade.offer_version = carti74.trade.offer_version + 1
-                carti30:_overwrite_local_trade_state(carti74.trade)
-            end
-        end
-    end
+    if carti74.active and carti74.trade then carti74.resetOffer(false) end
 end
 
-carti233('Make Partner Accept', Color3.fromRGB(0, 100, 50), Color3.fromRGB(0, 200, 100), carti222, makePartnerAccept)
+
+carti233('Make Partner Accept', Color3.fromRGB(50, 150, 50), Color3.fromRGB(100, 255, 100), carti222, makePartnerAccept)
 
 carti235(carti222)
 
-local carti241, carti242 = carti233('Toggle Noclip: ON', Color3.fromRGB(180, 0, 0), Color3.fromRGB(255, 34, 34), carti222, function()
+local carti241, carti242
+carti241, carti242 = carti233('Toggle Noclip: ON', Color3.fromRGB(80, 80, 180), Color3.fromRGB(100, 100, 255), carti222, function()
     carti154.noclipEnabled = not carti154.noclipEnabled
     if carti154.noclipEnabled then
         carti241.Text = 'Toggle Noclip: ON'
-        carti241.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
-        carti242.Color = Color3.fromRGB(255, 34, 34)
+        carti241.BackgroundColor3 = Color3.fromRGB(80, 80, 180)
+        carti242.Color = Color3.fromRGB(100, 100, 255)
         carti194()
         carti195()
     else
         carti241.Text = 'Toggle Noclip: OFF'
-        carti241.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
-        carti242.Color = Color3.fromRGB(80, 80, 80)
+        carti241.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
+        carti242.Color = Color3.fromRGB(255, 100, 100)
+        carti194()
+        carti195()
     end
 end)
 
 carti235(carti222)
 
-carti233('Make Partner Unaccept', Color3.fromRGB(80, 0, 0), Color3.fromRGB(180, 0, 0), carti222, makePartnerUnaccept)
+carti233('Make Partner Unaccept', Color3.fromRGB(150, 50, 50), Color3.fromRGB(255, 100, 100), carti222, makePartnerUnaccept)
 
 carti235(carti222)
 
--- Section label: Fake Player Spawner
-local spawnLabel = Instance.new('TextLabel')
-spawnLabel.Size = UDim2.new(1, 0, 0, 16)
-spawnLabel.BackgroundTransparency = 1
-spawnLabel.Text = 'Fake Player Spawner'
-spawnLabel.Font = Enum.Font.SourceSansSemibold
-spawnLabel.TextSize = 11
-spawnLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-spawnLabel.TextXAlignment = Enum.TextXAlignment.Left
-spawnLabel.Parent = carti222
+-- Fake Player tier pools. Usernames below are taken from the existing username
+-- pool in this script; replace/add names here whenever you want a larger pool.
+-- Roblox username resolution is done at spawn time, so accounts do not need to
+-- have played this game. A name must still exist and Roblox services must respond.
+-- ==================== PET CATEGORY LISTS ====================
+-- Edit these lists to control which pets and usernames each button can choose.
+local POOR_PETS = {
+    'Mouse', 'Snow Cat', 'Fennec Fox', 'Kakapo', 'Camel', 'Forest Sprite', 'Buffalo',
+    'Poodle', 'Orangutan', 'Pangolin', 'Tegu', 'Dirty Ducky', 'Dog', 'Sado Mole',
+    'Stingray', 'California Condor', 'Armadillo', 'Ant', 'Bakeneko', 'Blue Cat',
+    'Muskrat', 'Shih Tzu', 'Kaijunior',
+}
 
-carti233('Add Poor', Color3.fromRGB(80, 50, 0), Color3.fromRGB(180, 120, 0), carti222, function()
-    local uname = randomUsernameFromList(POOR_USERNAMES) or carti78[math.random(1, #carti78)]
-    local petName, petFlags, rideMode = pickPetForCategory(carti80_poor)
-    local petKind = GetKindPet(petName)
-    if not petKind then
-        if carti32 then carti32:hint({ text = 'Pet not found: ' .. petName, length = 3, overridable = true }) end
+local MIDDLE_PETS = {
+    'Monkey', 'Mexican Wolf', 'Basilisk', 'Amber Butterfly', 'Angus Cow', 'Capuchin Monkey',
+    'Cherub Chipmunk', 'Cow', 'Gorilla', 'Ice Cube', 'Water Opossum', 'Leopard Shark',
+    'Longhorn Cow', 'Undead Elk', 'Thorny Devil', 'The Black Dog', 'African Wild Dog',
+    'Arctic Fox', 'Albino Bat', 'Magma Moose', 'Bunny Swirl', 'Burger Bear', 'Mini Pig',
+    'Manta Ray', 'Cabbit', 'Nightmare Owl', 'Clementine Owl', 'Crocodile', 'Dalmatian',
+    'Peppermint Penguin', 'Pretty Pony', 'Pupcake', 'Gingerbread Mouse', 'Hamster',
+    'Shiba Inu', 'Snowy Mammoth', 'Indian Flying Fox', 'Kage Crow', 'Stygian Owl',
+    'Honey Badger', 'Hedgehog',
+}
+
+local RICH_PETS = {
+    'Bat Dragon', 'Owl', 'Shadow Dragon', 'Giraffe', 'Frost Dragon', 'Parrot', 'Crow',
+    'Evil Unicorn', 'Turtle', 'Unicorn', 'Kangaroo', 'Aestus', 'Arctic Dusk Dragon',
+    'Arctic Reindeer', 'Balloon Unicorn', 'Ballet Swan', 'Axolotl', 'Blazing Lion',
+    'Blue Whale', 'Kitsune', 'Cerberus', 'Candicorn', 'Candy Hare',
+    'Chocolate Chip Bat Dragon', 'Lava Dragon', 'Chameleon', 'Majestic Pony', 'Cryptid',
+    'Mochi Meow', 'Fairy Bat Dragon', 'Purrowl', 'Phantom Dragon', 'Prismatic Butterfly',
+    'Giant Panda', 'Royal Capuchin Monkey', 'Glacier Kitsune', 'Scarebear',
+    'Diamond Dragon', 'Diamond Unicorn', 'Frost Fury', 'Golden Dragon', 'Golden Griffin',
+    'Golden Unicorn', 'Guardian Lion',
+}
+
+-- Username pools are randomized independently for every button press.
+local POOR_USERNAMES = {
+    'ridney123499', 'Babs17_209', 'SalmanBlox16', 'samu_030422', 'YujiXD16', '1lilkz', 'insanodel25', 'Maresoo11k',
+    'RealDealLex', 'itsmePicoy27', 'purplecat0078', 'DavidValguti', 'chicopro041', 'janiasiuuu', 'Nikiicool132', 'Sdrt1323',
+    'summy10291291028q', 'Gatitoperrito177', 'eyromeo777', 'Allenmo2018', 'tonyhim0', 'italomourareis2016', 'vhxfffhjf', 'lewi_yo3',
+}
+
+local MIDDLE_USERNAMES = {
+    'Stacy34585', 'hssn_175', 'secret_67511', 'Kohen808', '17_kaykayy9', 'ioipkokpo', 'Darellthagoat83', 'prachit2798',
+    'noezrael18', 'yoshi_msh', 'Angieluz_16', 'asfi3737sp', '9h_zErvic', 'LuisCr7558', 'Aylahope2016', '107wpfhx3',
+    'Kikin20135', 'bowow288', 'iophkfgyr', 'lili_676784', 'tom116714', 'jungjung2018', 'Ivan74cm283', 'juleslikesblue8474',
+}
+
+local RICH_USERNAMES = {
+    'Robin86909', 'Walidisacutie', 'Rlopez1567', 'Leeniim1246', 'Kisha67778', 'carlob88', 'Kin09474', 'mason2005rizz',
+    'Allen160702', 'T20ku16', 'nozomi3368', 'Kiaweeee123', 'Ayn_Clarence', 'mudder_mistery', 'azhart454', 'Lily_girls64',
+    'Yaieur737gfu', 'bob_bo641', 'riyaraj90', 'Matveyb168', 'Firashtarmiz', 'Dillin959', 'preetham000029', 'Skysis20',
+}
+
+local FakePlayerPools = {
+    Poor = {
+        Users = POOR_USERNAMES,
+        Pets = POOR_PETS,
+        Color = Color3.fromRGB(65, 125, 75),
+        Stroke = Color3.fromRGB(125, 255, 145),
+    },
+    Mid = {
+        Users = MIDDLE_USERNAMES,
+        Pets = MIDDLE_PETS,
+        Color = Color3.fromRGB(65, 105, 175),
+        Stroke = Color3.fromRGB(120, 185, 255),
+    },
+    Rich = {
+        Users = RICH_USERNAMES,
+        Pets = RICH_PETS,
+        Color = Color3.fromRGB(150, 105, 35),
+        Stroke = Color3.fromRGB(255, 205, 95),
+    },
+}
+
+-- Randomly choose one of the requested pet potion/neon types on every click.
+local FakePetTypes = {
+    {name = 'NFR', flags = {F = true,  R = true,  N = true,  M = false}},
+    {name = 'NR',  flags = {F = false, R = true,  N = true,  M = false}},
+    {name = 'FR',  flags = {F = true,  R = true,  N = false, M = false}},
+    {name = 'MFR', flags = {F = true,  R = true,  N = false, M = true}},
+    {name = 'MR',  flags = {F = false, R = true,  N = false, M = true}},
+    {name = 'R',   flags = {F = false, R = true,  N = false, M = false}},
+    {name = 'F',   flags = {F = true,  R = false, N = false, M = false}},
+    {name = 'N',   flags = {F = false, R = false, N = true,  M = false}},
+    {name = 'M',   flags = {F = false, R = false, N = false, M = true}},
+}
+
+local function pickRandomValidPet(pool)
+    local available = {}
+    for _, petName in ipairs(pool.Pets) do
+        local petId = GetKindPet(petName)
+        if petId then
+            table.insert(available, {name = petName, id = petId})
+        end
+    end
+    if #available == 0 then
+        return nil, 'No pets from this tier were found in the game pet catalogue.'
+    end
+    return available[math.random(1, #available)]
+end
+
+local function spawnTierFakePlayer(tierName)
+    local pool = FakePlayerPools[tierName]
+    if not pool or #pool.Users == 0 then
         return
     end
-    local pid = carti2:GetUserIdFromNameAsync(uname)
-    CreateFakePlayerCharacterFromPARTNER_NAME(uname, pid, { kind = petKind }, petFlags, rideMode)
-end)
 
-carti235(carti222)
-
-carti233('Add Middle', Color3.fromRGB(0, 60, 80), Color3.fromRGB(0, 140, 180), carti222, function()
-    local uname = randomUsernameFromList(MIDDLE_USERNAMES) or carti78[math.random(1, #carti78)]
-    local petName, petFlags, rideMode = pickPetForCategory(carti80_middle)
-    local petKind = GetKindPet(petName)
-    if not petKind then
-        if carti32 then carti32:hint({ text = 'Pet not found: ' .. petName, length = 3, overridable = true }) end
+    local username = pool.Users[math.random(1, #pool.Users)]
+    local petChoice = pickRandomValidPet(pool)
+    if not petChoice then
         return
     end
-    local pid = carti2:GetUserIdFromNameAsync(uname)
-    CreateFakePlayerCharacterFromPARTNER_NAME(uname, pid, { kind = petKind }, petFlags, rideMode)
-end)
 
+    local typeChoice = FakePetTypes[math.random(1, #FakePetTypes)]
+    local flags = {
+        F = typeChoice.flags.F,
+        R = typeChoice.flags.R,
+        N = typeChoice.flags.N,
+        M = typeChoice.flags.M,
+    }
+
+    CreateFakePlayerCharacterFromPARTNER_NAME(
+        username,
+        nil,
+        {kind = petChoice.id},
+        flags
+    )
+end
+
+carti233('Add Poor', FakePlayerPools.Poor.Color, FakePlayerPools.Poor.Stroke, carti222, function()
+    spawnTierFakePlayer('Poor')
+end)
+carti235(carti222)
+carti233('Add Mid', FakePlayerPools.Mid.Color, FakePlayerPools.Mid.Stroke, carti222, function()
+    spawnTierFakePlayer('Mid')
+end)
+carti235(carti222)
+carti233('Add Rich', FakePlayerPools.Rich.Color, FakePlayerPools.Rich.Stroke, carti222, function()
+    spawnTierFakePlayer('Rich')
+end)
 carti235(carti222)
 
-carti233('Add Rich', Color3.fromRGB(80, 0, 0), Color3.fromRGB(255, 34, 34), carti222, function()
-    local uname = randomUsernameFromList(RICH_USERNAMES) or carti78[math.random(1, #carti78)]
-    local petName, petFlags, rideMode = pickPetForCategory(carti80_rich)
-    local petKind = GetKindPet(petName)
-    if not petKind then
-        if carti32 then carti32:hint({ text = 'Pet not found: ' .. petName, length = 3, overridable = true }) end
-        return
-    end
-    local pid = carti2:GetUserIdFromNameAsync(uname)
-    CreateFakePlayerCharacterFromPARTNER_NAME(uname, pid, { kind = petKind }, petFlags, rideMode)
-end)
-
-carti235(carti222)
 local carti251 = Instance.new('TextButton')
 carti251.Size = UDim2.new(1, 0, 0, 14)
-carti251.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+carti251.BackgroundColor3 = Color3.fromRGB(157, 58, 0)
 carti251.BackgroundTransparency = 0.2
 carti251.Text = 'Delete all fake players'
 carti251.Font = Enum.Font.FredokaOne
@@ -2765,62 +2577,36 @@ carti251.TextSize = 7
 carti251.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti251.Parent = carti222
 local carti252 = Instance.new('UICorner')
-carti252.CornerRadius = UDim.new(0, 8)
+carti252.CornerRadius = UDim.new(0, 3)
 carti252.Parent = carti251
 
-carti251.MouseButton1Click:Connect(function()
-    pcall(function()
-        carti164:Stop()
-        for _, carti147 in ipairs(carti160) do
-            if carti147 and carti147.model then
-                pcall(function()
-                    carti161('pet_char_wrappers', function(petWrappers)
-                        for i = #petWrappers, 1, -1 do
-                            if petWrappers[i].pet_unique == carti147.wrapper.pet_unique then table.remove(petWrappers, i) end
-                        end
-                        return petWrappers
-                    end)
-                end)
-                pcall(function()
-                    carti161('pet_state_managers', function(petStates)
-                        for i = #petStates, 1, -1 do
-                            if petStates[i].char == carti147.model then table.remove(petStates, i) end
-                        end
-                        return petStates
-                    end)
-                end)
-            end
-        end
-        for _, folder in pairs(carti159) do if folder and folder.Parent then folder:Destroy() end end
-        carti159 = {}
-        carti160 = {}
-        besidePetFollowers = {}
-        carti8 = {}
-        _G.fakePlayerIds = {}
-        print('✅ All fake players and pets deleted successfully')
-    end)
+cartiRuntime:Connect(carti251.MouseButton1Click, function()
+    carti154.clearNPCs()
+    print('All local players and pets deleted.')
 end)
 
 carti235(carti222)
 
-local carti253, carti254 = carti233('Remove Partner Pets: OFF', Color3.fromRGB(42, 42, 42), Color3.fromRGB(80, 80, 80), carti222, function()
+local carti253, carti254
+carti253, carti254 = carti233('Remove Partner Pets: OFF', Color3.fromRGB(150, 50, 50), Color3.fromRGB(255, 100, 100), carti222, function()
     carti74.removePartnerPetsOnConfirm = not carti74.removePartnerPetsOnConfirm
     carti69.REMOVE_PARTNER_PETS_ON_CONFIRM = carti74.removePartnerPetsOnConfirm
     if carti74.removePartnerPetsOnConfirm then
         carti253.Text = 'Remove Partner Pets: ON'
-        carti253.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
-        carti254.Color = Color3.fromRGB(255, 34, 34)
+        carti253.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+        carti254.Color = Color3.fromRGB(100, 255, 100)
     else
         carti253.Text = 'Remove Partner Pets: OFF'
-        carti253.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
-        carti254.Color = Color3.fromRGB(80, 80, 80)
+        carti253.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+        carti254.Color = Color3.fromRGB(255, 100, 100)
     end
 end)
 
 
-carti235(carti222)
-
--- Section label
+do -- Scope Change Username locals to avoid Lua local-register limit.
+-- ==================== CHANGE USERNAME (TRADE UI ONLY) ====================
+-- This changes the displayed name in this client's TradeApp UI only.
+-- It does not change the actual Roblox account username.
 local usernameLabel = Instance.new('TextLabel')
 usernameLabel.Size = UDim2.new(1, 0, 0, 16)
 usernameLabel.BackgroundTransparency = 1
@@ -2844,6 +2630,7 @@ usernameBox.ClearTextOnFocus = false
 usernameBox.TextXAlignment = Enum.TextXAlignment.Left
 usernameBox.Parent = carti222
 Instance.new('UICorner', usernameBox).CornerRadius = UDim.new(0, 8)
+
 local usernameStroke = Instance.new('UIStroke')
 usernameStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 usernameStroke.Color = Color3.fromRGB(60, 60, 60)
@@ -2870,11 +2657,12 @@ local function debugTradeUIHierarchy()
     end)
 end
 
+local lastAppliedCustomName = nil
+
 local function findMyNameLabel()
     local ok, result = pcall(function()
         local frame = carti2.LocalPlayer.PlayerGui.TradeApp.Frame
         local realName = carti2.LocalPlayer.Name:lower()
-
         for _, lbl in ipairs(frame:GetDescendants()) do
             if lbl:IsA('TextLabel') and lbl.Text:lower() == realName then
                 return lbl
@@ -2885,60 +2673,83 @@ local function findMyNameLabel()
     return ok and result or nil
 end
 
--- Typing "debug" into the box prints the full UI hierarchy so you can
--- confirm which path findMyNameLabel should be using.
-usernameBox:GetPropertyChangedSignal('Text'):Connect(function()
-    local v = usernameBox.Text
-    if v == 'debug' then
-        debugTradeUIHierarchy()
-        return
-    end
-    carti154.spoofedName = (v ~= '') and v or nil
-end)
+local function applyTradeUsername()
+    local ok, frame = pcall(function()
+        return carti2.LocalPlayer.PlayerGui.TradeApp.Frame
+    end)
+    if not ok or not frame then return end
 
-usernameBox.FocusLost:Connect(function()
-    local v = usernameBox.Text
-    if v == 'debug' then return end
-    carti154.spoofedName = (v ~= '') and v or nil
-end)
+    local realName = carti2.LocalPlayer.Name
+    local realNameLower = realName:lower()
+    local previousCustomName = lastAppliedCustomName
+    local customName = carti154.spoofedName
 
--- Hook refresh_all: re-apply spoof at end of frame AFTER the game finishes
--- its own redraw (task.defer runs after all synchronous code this frame).
-local originalRefreshAll = carti30.refresh_all
-carti30.refresh_all = function(self, ...)
-    local result = originalRefreshAll(self, ...)
-    if carti154.spoofedName then
-        task.defer(function()
-            local lbl = findMyNameLabel()
-            if lbl then lbl.Text = carti154.spoofedName end
-        end)
-    end
-    return result
-end
-
-carti4.RenderStepped:Connect(function()
-    if carti154.spoofedName then
-        local ok, frame = pcall(function()
-            return carti2.LocalPlayer.PlayerGui.TradeApp.Frame
-        end)
-        if ok and frame then
-            local realName = carti2.LocalPlayer.Name:lower()
-            for _, lbl in ipairs(frame:GetDescendants()) do
-                if lbl:IsA('TextLabel') and lbl.Text:lower() == realName then
-                    lbl.Text = carti154.spoofedName
-                end
+    for _, lbl in ipairs(frame:GetDescendants()) do
+        if lbl:IsA('TextLabel') then
+            local currentText = lbl.Text
+            local currentLower = currentText:lower()
+            if customName and (currentLower == realNameLower
+                or (previousCustomName and currentText == previousCustomName)) then
+                lbl.Text = customName
+            elseif not customName and previousCustomName and currentText == previousCustomName then
+                lbl.Text = realName
             end
         end
     end
-end)
+    lastAppliedCustomName = customName
 end
+
+-- Typing "debug" prints the TradeApp negotiation UI hierarchy.
+cartiRuntime:Connect(usernameBox:GetPropertyChangedSignal('Text'), function()
+    local value = usernameBox.Text
+    if value == 'debug' then
+        debugTradeUIHierarchy()
+        return
+    end
+    carti154.spoofedName = (value ~= '') and value or nil
+    task.defer(applyTradeUsername)
+end)
+
+cartiRuntime:Connect(usernameBox.FocusLost, function()
+    local value = usernameBox.Text
+    if value == 'debug' then return end
+    carti154.spoofedName = (value ~= '') and value or nil
+    task.defer(applyTradeUsername)
+end)
+
+-- Reapply after the game's own TradeApp redraw.
+local originalUsernameRefreshAll = carti30.refresh_all
+if type(originalUsernameRefreshAll) == 'function' then
+    carti30.refresh_all = function(self, ...)
+        local result = originalUsernameRefreshAll(self, ...)
+        if carti154.spoofedName then
+            task.defer(applyTradeUsername)
+        end
+        return result
+    end
+    -- Register this wrapper so the runtime restores the original method on shutdown.
+    cartiRuntime:OwnHooks(carti30, {refresh_all = originalUsernameRefreshAll})
+else
+    warn('[Carti ADM] Change Username: TradeApp.refresh_all was not found; using the UI update fallback only.')
+end
+
+-- RenderStepped is intentionally connected directly: cartiRuntime:Connect()
+-- schedules a new task for every frame and is unsuitable for a per-frame scan.
+local usernameRenderConnection = carti4.RenderStepped:Connect(function()
+    if carti154.spoofedName or lastAppliedCustomName then
+        applyTradeUsername()
+    end
+end)
+cartiRuntime.Connections[usernameRenderConnection] = true
+
+end -- End Change Username local scope.
 
 -- ==================== PLAYERS TAB ====================
 local carti255 = carti155['Players']
-do
+
 local carti256 = Instance.new('TextBox')
 carti256.Size = UDim2.new(1, 0, 0, 26)
-carti256.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti256.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 carti256.BackgroundTransparency = 0.2
 carti256.Text = ''
 carti256.PlaceholderText = 'Search players...'
@@ -2948,7 +2759,7 @@ carti256.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti256.ClearTextOnFocus = false
 carti256.TextXAlignment = Enum.TextXAlignment.Left
 carti256.Parent = carti255
-Instance.new('UICorner', carti256).CornerRadius = UDim.new(0, 6)
+Instance.new('UICorner', carti256).CornerRadius = UDim.new(0, 4)
 
 local carti257 = Instance.new('Frame')
 carti257.Size = UDim2.new(1, 0, 0, 26)
@@ -2958,43 +2769,43 @@ carti257.Parent = carti255
 
 local carti258 = Instance.new('TextButton')
 carti258.Size = UDim2.new(0.48, 0, 1, 0)
-carti258.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+carti258.BackgroundColor3 = Color3.fromRGB(65, 65, 81)
 carti258.BackgroundTransparency = 0.2
 carti258.Text = 'Select Players'
 carti258.Font = Enum.Font.FredokaOne
 carti258.TextSize = 10
 carti258.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti258.Parent = carti257
-Instance.new('UICorner', carti258).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti258).CornerRadius = UDim.new(0, 4)
 local carti259 = Instance.new('UIStroke')
 carti259.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-carti259.Color = Color3.fromRGB(255, 34, 34)
+carti259.Color = Color3.fromRGB(159, 159, 159)
 carti259.Thickness = 1.0
 carti259.Parent = carti258
 
 local carti260 = Instance.new('TextButton')
 carti260.Size = UDim2.new(0.48, 0, 1, 0)
 carti260.Position = UDim2.new(0.52, 0, 0, 0)
-carti260.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+carti260.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
 carti260.BackgroundTransparency = 0.2
 carti260.Text = 'Block Selected'
 carti260.Font = Enum.Font.FredokaOne
 carti260.TextSize = 10
 carti260.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti260.Parent = carti257
-Instance.new('UICorner', carti260).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti260).CornerRadius = UDim.new(0, 4)
 
 local carti261 = Instance.new('ScrollingFrame')
 carti261.Size = UDim2.new(1, 0, 0, 250)
 carti261.Position = UDim2.new(0, 0, 0, 60)
-carti261.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+carti261.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
 carti261.BackgroundTransparency = 0.5
 carti261.BorderSizePixel = 0
 carti261.ScrollBarThickness = 4
-carti261.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+carti261.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 carti261.ScrollBarImageTransparency = 0.5
 carti261.Parent = carti255
-Instance.new('UICorner', carti261).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti261).CornerRadius = UDim.new(0, 4)
 
 local carti262 = Instance.new('UIListLayout')
 carti262.SortOrder = Enum.SortOrder.LayoutOrder
@@ -3013,17 +2824,17 @@ local carti264 = Instance.new('TextLabel')
 carti264.Size = UDim2.new(1, 0, 0, 18)
 carti264.Position = UDim2.new(0, 0, 0, 315)
 carti264.BackgroundTransparency = 1
-carti264.Text = 'Top 35 Richest Players (Auto-Refresh)'
+carti264.Text = '💰 Top 35 Richest Players (Auto-Refresh)'
 carti264.Font = Enum.Font.FredokaOne
 carti264.TextSize = 11
-carti264.TextColor3 = Color3.fromRGB(255, 100, 100)
+carti264.TextColor3 = Color3.fromRGB(255, 215, 0)
 carti264.TextXAlignment = Enum.TextXAlignment.Left
 carti264.Parent = carti255
 
 local carti265 = Instance.new('TextButton')
 carti265.Size = UDim2.new(0.3, 0, 0, 18)
 carti265.Position = UDim2.new(0.7, 0, 0, 315)
-carti265.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+carti265.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
 carti265.BackgroundTransparency = 0.2
 carti265.Text = 'Auto: ON'
 carti265.Font = Enum.Font.FredokaOne
@@ -3035,9 +2846,9 @@ Instance.new('UICorner', carti265).CornerRadius = UDim.new(0, 4)
 local carti266 = Instance.new('TextButton')
 carti266.Size = UDim2.new(0.3, 0, 0, 18)
 carti266.Position = UDim2.new(0.35, 0, 0, 315)
-carti266.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti266.BackgroundColor3 = Color3.fromRGB(50, 120, 50)
 carti266.BackgroundTransparency = 0.2
-carti266.Text = 'Manual'
+carti266.Text = '🔄 Manual'
 carti266.Font = Enum.Font.FredokaOne
 carti266.TextSize = 8
 carti266.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -3047,14 +2858,14 @@ Instance.new('UICorner', carti266).CornerRadius = UDim.new(0, 4)
 local carti267 = Instance.new('ScrollingFrame')
 carti267.Size = UDim2.new(1, 0, 0, 320)
 carti267.Position = UDim2.new(0, 0, 0, 337)
-carti267.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+carti267.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
 carti267.BackgroundTransparency = 0.5
 carti267.BorderSizePixel = 0
 carti267.ScrollBarThickness = 4
-carti267.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+carti267.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 carti267.ScrollBarImageTransparency = 0.5
 carti267.Parent = carti255
-Instance.new('UICorner', carti267).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti267).CornerRadius = UDim.new(0, 4)
 
 local carti268 = Instance.new('UIListLayout')
 carti268.SortOrder = Enum.SortOrder.LayoutOrder
@@ -3112,25 +2923,25 @@ end
 local function carti276(carti310, index)
     local carti277 = Instance.new('Frame')
     carti277.Size = UDim2.new(1, -8, 0, 32)
-    carti277.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    carti277.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
     carti277.BackgroundTransparency = 0.1
     carti277.LayoutOrder = index
     carti277.Name = 'RichestPlayer_' .. carti310.playerName
     carti277.ClipsDescendants = true
     carti277.Parent = carti267
     Instance.new('UICorner', carti277).CornerRadius = UDim.new(0, 8)
-
+    
     local carti278 = Instance.new('UIGradient')
     carti278.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 0, 0)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(16, 16, 16))
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 45, 65)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(35, 32, 48))
     })
     carti278.Rotation = 90
     carti278.Parent = carti277
     
     local carti279 = Instance.new('UIStroke')
     carti279.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti279.Color = Color3.fromRGB(255, 34, 34)
+    carti279.Color = Color3.fromRGB(255, 200, 50)
     carti279.Thickness = 1.5
     carti279.Transparency = 0.2
     carti279.Parent = carti277
@@ -3156,24 +2967,24 @@ local function carti276(carti310, index)
     local carti282 = Instance.new('TextButton')
     carti282.Size = UDim2.new(0, 32, 0, 22)
     carti282.Position = UDim2.new(1, -74, 0, 5)
-    carti282.BackgroundColor3 = Color3.fromRGB(0, 100, 50)
+    carti282.BackgroundColor3 = Color3.fromRGB(50, 130, 100)
     carti282.BackgroundTransparency = 0.1
-    carti282.Text = 'Trade'
+    carti282.Text = '🤝'
     carti282.Font = Enum.Font.GothamBold
     carti282.TextSize = 12
     carti282.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti282.Parent = carti277
     Instance.new('UICorner', carti282).CornerRadius = UDim.new(0, 6)
 
-    carti282.MouseEnter:Connect(function()
-        carti6:Create(carti282, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(0, 130, 65) }):Play()
+    cartiRuntime:Connect(carti282.MouseEnter, function()
+        carti6:Create(carti282, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(70, 160, 120) }):Play()
     end)
     
-    carti282.MouseLeave:Connect(function()
-        carti6:Create(carti282, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(0, 100, 50) }):Play()
+    cartiRuntime:Connect(carti282.MouseLeave, function()
+        carti6:Create(carti282, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(50, 130, 100) }):Play()
     end)
 
-    carti282.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti282.MouseButton1Click, function()
         local carti198 = carti2:FindFirstChild(carti310.playerName)
         if carti198 then
             carti197(carti198)
@@ -3193,24 +3004,24 @@ local function carti276(carti310, index)
     local carti141 = Instance.new('TextButton')
     carti141.Size = UDim2.new(0, 32, 0, 22)
     carti141.Position = UDim2.new(1, -38, 0, 5)
-    carti141.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+    carti141.BackgroundColor3 = Color3.fromRGB(100, 70, 150)
     carti141.BackgroundTransparency = 0.1
-    carti141.Text = 'View'
+    carti141.Text = '👤'
     carti141.Font = Enum.Font.GothamBold
     carti141.TextSize = 12
     carti141.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti141.Parent = carti277
     Instance.new('UICorner', carti141).CornerRadius = UDim.new(0, 6)
 
-    carti141.MouseEnter:Connect(function()
-        carti6:Create(carti141, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(180, 0, 0) }):Play()
+    cartiRuntime:Connect(carti141.MouseEnter, function()
+        carti6:Create(carti141, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(130, 90, 180) }):Play()
     end)
     
-    carti141.MouseLeave:Connect(function()
-        carti6:Create(carti141, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(139, 0, 0) }):Play()
+    cartiRuntime:Connect(carti141.MouseLeave, function()
+        carti6:Create(carti141, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(100, 70, 150) }):Play()
     end)
 
-    carti141.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti141.MouseButton1Click, function()
         local carti198 = carti2:FindFirstChild(carti310.playerName)
         if carti198 then
             pcall(function()
@@ -3254,7 +3065,7 @@ local function carti276(carti310, index)
     carti285.Size = UDim2.new(0.45, 0, 1, 0)
     carti285.Position = UDim2.new(0.55, 0, 0, 0)
     carti285.BackgroundTransparency = 1
-    carti285.Text = carti67(carti310.totalValue)
+    carti285.Text = carti67(carti310.totalValue) .. ((carti310.unknownValues or 0) > 0 and ' + ?' or '')
     carti285.Font = Enum.Font.GothamBold
     carti285.TextSize = 10
     carti285.TextColor3 = Color3.fromRGB(120, 255, 120)
@@ -3287,7 +3098,7 @@ local function carti276(carti310, index)
     local carti289 = false
     local carti290 = 0
 
-    carti283.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti283.MouseButton1Click, function()
         if carti289 then
             carti289 = false
             carti290 = carti290 + 1
@@ -3307,7 +3118,7 @@ local function carti276(carti310, index)
             if carti310.pets and #carti310.pets > 0 then
                 local carti293 = {}
                 for _, carti57 in ipairs(carti310.pets) do table.insert(carti293, carti57) end
-                table.sort(carti293, function(a, carti390) return a.value > carti390.value end)
+                table.sort(carti293, function(a, carti390) return (a.value or -math.huge) > (carti390.value or -math.huge) end)
 
                 local carti294 = math.min(#carti293, 8)
                 for i = 1, carti294 do
@@ -3399,125 +3210,63 @@ local function carti276(carti310, index)
     return carti277
 end
 
-function carti299(forceRefresh)
-    if carti270.isRefreshing then return end
-    
-    local carti300 = tick()
-    if not forceRefresh and (carti300 - carti270.lastRefreshTime) < carti270.REFRESH_COOLDOWN then
+-- BEGIN PLAYER RANKING
+local function carti299(forceRefresh)
+    if carti270.isRefreshing then
+        if forceRefresh then carti270.refreshAgain = true end
         return
     end
-    
-    carti270.isRefreshing = true
-    carti270.lastRefreshTime = carti300
-    
-    local carti301 = carti2.LocalPlayer
-    local carti302 = {}
-    for _, carti240 in ipairs(carti2:GetPlayers()) do
-        if carti240 ~= carti301 then
-            carti302[carti240.Name] = carti240
-        end
-    end
-    
-    local carti303 = carti271()
-    
-    -- Remove players who left
-    for playerName in pairs(carti303) do
-        if not carti302[playerName] then
-            carti273(playerName)
-            for i, carti162 in ipairs(carti157) do
-                if carti162.playerName == playerName then
-                    table.remove(carti157, i)
-                    break
-                end
-            end
-        end
-    end
-    
-    -- If force refresh, clear everything
-    if forceRefresh then
-        for _, child in ipairs(carti267:GetChildren()) do
-            if child:IsA('Frame') then child:Destroy() end
-        end
-        carti158 = {}
-        carti157 = {}
-        carti270.playerContainers = {}
-        carti303 = {}
-        
-        local carti304 = Instance.new('TextLabel')
-        carti304.Size = UDim2.new(1, -8, 0, 30)
-        carti304.BackgroundTransparency = 1
-        carti304.Text = '⏳ Scanning players...'
-        carti304.Font = Enum.Font.FredokaOne
-        carti304.TextSize = 11
-        carti304.TextColor3 = Color3.fromRGB(200, 200, 200)
-        carti304.LayoutOrder = 0
-        carti304.Name = 'LoadingLabel'
-        carti304.Parent = carti267
-    end
-    
+    if not forceRefresh and tick() - carti270.lastRefreshTime < carti270.REFRESH_COOLDOWN then return end
+    carti270.isRefreshing, carti270.lastRefreshTime = true, tick()
     task.spawn(function()
-        local carti305 = {}
-        for playerName, carti240 in pairs(carti302) do
-            if forceRefresh or not carti303[playerName] then
-                table.insert(carti305, carti240)
+        local ok, err = xpcall(function()
+            local present = {}
+            for _, player in ipairs(carti2:GetPlayers()) do
+                if player ~= carti2.LocalPlayer then present[player.UserId] = player end
             end
-        end
-        
-        for _, carti240 in ipairs(carti305) do
-            local carti12, carti306 = pcall(function()
-                return carti68:InvokeServer(carti240.UserId)
-            end)
-            
-            local carti307 = 0
-            local carti308 = {}
-            
-            if carti12 and carti306 then
-                local carti309 = carti61(carti306)
-                carti308 = carti64(carti309)
-                for _, carti57 in ipairs(carti308) do carti307 = carti307 + carti57.value end
+            for id in pairs(carti270.playerCache) do
+                if not present[id] then carti270.playerCache[id] = nil end
             end
-            
-            local carti310 = { playerName = carti240.Name, totalValue = carti307, pets = carti308, player = carti240 }
-            carti270.playerCache[carti240.Name] = { totalValue = carti307, pets = carti308, player = carti240, lastUpdated = tick() }
-            table.insert(carti157, carti310)
-        end
-        
-        local carti304 = carti267:FindFirstChild('LoadingLabel')
-        if carti304 then carti304:Destroy() end
-        
-        table.sort(carti157, function(a, carti390) return a.totalValue > carti390.totalValue end)
-        
-        local carti294 = math.min(#carti157, 35)
-        local carti280 = { [1] = Color3.fromRGB(255, 215, 0), [2] = Color3.fromRGB(192, 192, 192), [3] = Color3.fromRGB(205, 127, 50) }
-        
-        for i = 1, carti294 do
-            local carti162 = carti157[i]
-            local carti311 = carti267:FindFirstChild('RichestPlayer_' .. carti162.playerName)
-            
-            if not carti311 then
-                carti276(carti162, i)
-                carti270.playerContainers[carti162.playerName] = true
-            else
-                carti311.LayoutOrder = i
-                local carti281 = carti311:FindFirstChildOfClass('TextLabel')
-                if carti281 and carti281.Size == UDim2.new(0, 20, 0, 20) then
-                    carti281.Text = tostring(i)
-                    carti281.BackgroundColor3 = carti280[i] or Color3.fromRGB(80, 80, 80)
+            for id, player in pairs(present) do
+                local cached = carti270.playerCache[id]
+                if forceRefresh or not cached or tick() - cached.lastUpdated > 60 then
+                    local fetched, raw = pcall(function() return carti68:InvokeServer(id) end)
+                    if player.Parent == carti2 and cartiRuntime.Alive then
+                        local pets = fetched and raw and carti64(carti61(raw)) or {}
+                        local total, unknown = 0, 0
+                        for _, pet in ipairs(pets) do
+                            if pet.value == nil then unknown += 1 else total += pet.value end
+                        end
+                        carti270.playerCache[id] = {playerName = player.Name, player = player, pets = pets,
+                            totalValue = total, unknownValues = unknown, lastUpdated = tick()}
+                    end
                 end
             end
-        end
-        
-        for i = carti294 + 1, #carti157 do
-            local carti162 = carti157[i]
-            local carti277 = carti267:FindFirstChild('RichestPlayer_' .. carti162.playerName)
-            if carti277 then carti277:Destroy() end
-        end
-        
-        carti274()
-        
+            table.clear(carti157)
+            for _, record in pairs(carti270.playerCache) do
+                if record.player.Parent == carti2 then table.insert(carti157, record) end
+            end
+            table.sort(carti157, function(a, b)
+                if a.totalValue == b.totalValue then return a.player.UserId < b.player.UserId end
+                return a.totalValue > b.totalValue
+            end)
+            for _, child in ipairs(carti267:GetChildren()) do
+                if child:IsA('Frame') or child.Name == 'LoadingLabel' then child:Destroy() end
+            end
+            table.clear(carti270.playerContainers)
+            for i = 1, math.min(#carti157, 35) do
+                local record = carti157[i]
+                carti276(record, i)
+                carti270.playerContainers[record.player.UserId] = true
+            end
+            carti274()
+        end, debug.traceback)
         carti270.isRefreshing = false
+        if not ok then warn('[Carti ADM] Player refresh failed: ' .. tostring(err)) end
+        if carti270.refreshAgain then carti270.refreshAgain = false; carti299(true) end
     end)
 end
+-- END PLAYER RANKING
 
 local function carti312()
     if not carti270.autoRefreshEnabled then return end
@@ -3531,11 +3280,11 @@ task.spawn(function()
     end
 end)
 
-carti266.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti266.MouseButton1Click, function()
     carti299(true)
 end)
 
-carti265.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti265.MouseButton1Click, function()
     carti270.autoRefreshEnabled = not carti270.autoRefreshEnabled
     if carti270.autoRefreshEnabled then
         carti265.Text = 'Auto: ON'
@@ -3547,93 +3296,20 @@ carti265.MouseButton1Click:Connect(function()
     end
 end)
 
-carti2.PlayerAdded:Connect(function(carti240)
-    if carti270.autoRefreshEnabled then
-        task.wait(1)
-        if carti240 ~= carti2.LocalPlayer then
-            task.spawn(function()
-                local carti12, carti306 = pcall(function()
-                    return carti68:InvokeServer(carti240.UserId)
-                end)
-                
-                local carti307 = 0
-                local carti308 = {}
-                
-                if carti12 and carti306 then
-                    local carti309 = carti61(carti306)
-                    carti308 = carti64(carti309)
-                    for _, carti57 in ipairs(carti308) do carti307 = carti307 + carti57.value end
-                end
-                
-                local carti310 = { playerName = carti240.Name, totalValue = carti307, pets = carti308, player = carti240 }
-                carti270.playerCache[carti240.Name] = { totalValue = carti307, pets = carti308, player = carti240, lastUpdated = tick() }
-                table.insert(carti157, carti310)
-                
-                table.sort(carti157, function(a, carti390) return a.totalValue > carti390.totalValue end)
-                
-                local carti313 = 1
-                for i, carti162 in ipairs(carti157) do
-                    if carti162.playerName == carti240.Name then carti313 = i break end
-                end
-                
-                if carti313 <= 35 then
-                    carti276(carti310, carti313)
-                    carti270.playerContainers[carti240.Name] = true
-                    
-                    local carti280 = { [1] = Color3.fromRGB(255, 215, 0), [2] = Color3.fromRGB(192, 192, 192), [3] = Color3.fromRGB(205, 127, 50) }
-                    for i, carti162 in ipairs(carti157) do
-                        if i <= 35 then
-                            local carti277 = carti267:FindFirstChild('RichestPlayer_' .. carti162.playerName)
-                            if carti277 then
-                                carti277.LayoutOrder = i
-                                local carti281 = carti277:FindFirstChildOfClass('TextLabel')
-                                if carti281 and carti281.Size == UDim2.new(0, 20, 0, 20) then
-                                    carti281.Text = tostring(i)
-                                    carti281.BackgroundColor3 = carti280[i] or Color3.fromRGB(80, 80, 80)
-                                end
-                            end
-                        end
-                    end
-                    carti274()
-                end
-            end)
-        end
-    end
+cartiRuntime:Connect(carti2.PlayerAdded, function()
+    if carti270.autoRefreshEnabled then carti299(true) end
+end)
+cartiRuntime:Connect(carti2.PlayerRemoving, function(player)
+    carti270.playerCache[player.UserId] = nil
+    carti273(player.Name)
+    if carti270.autoRefreshEnabled then task.defer(function() carti299(true) end) end
 end)
 
-carti2.PlayerRemoving:Connect(function(carti240)
-    if carti270.autoRefreshEnabled then
-        carti273(carti240.Name)
-        
-        for i, carti162 in ipairs(carti157) do
-            if carti162.playerName == carti240.Name then
-                table.remove(carti157, i)
-                break
-            end
-        end
-        
-        local carti280 = { [1] = Color3.fromRGB(255, 215, 0), [2] = Color3.fromRGB(192, 192, 192), [3] = Color3.fromRGB(205, 127, 50) }
-        for i, carti162 in ipairs(carti157) do
-            if i <= 35 then
-                local carti277 = carti267:FindFirstChild('RichestPlayer_' .. carti162.playerName)
-                if carti277 then
-                    carti277.LayoutOrder = i
-                    local carti281 = carti277:FindFirstChildOfClass('TextLabel')
-                    if carti281 and carti281.Size == UDim2.new(0, 20, 0, 20) then
-                        carti281.Text = tostring(i)
-                        carti281.BackgroundColor3 = carti280[i] or Color3.fromRGB(80, 80, 100)
-                    end
-                end
-            end
-        end
-        carti274()
-    end
-end)
 
 local function carti314(carti240, index, carti326)
     local carti315 = Instance.new('TextButton')
     carti315.Size = UDim2.new(1, -8, 0, 32)
-    carti315.BackgroundColor3 = carti326 and Color3.fromRGB(45, 0, 0) or Color3.fromRGB(26, 26, 26)
+    carti315.BackgroundColor3 = carti326 and Color3.fromRGB(50, 80, 100) or Color3.fromRGB(40, 40, 50)
     carti315.BackgroundTransparency = 0.2
     carti315.Text = ''
     carti315.LayoutOrder = index
@@ -3641,7 +3317,7 @@ local function carti314(carti240, index, carti326)
     Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 4)
     local carti316 = Instance.new('UIStroke')
     carti316.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti316.Color = carti326 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+    carti316.Color = carti326 and Color3.fromRGB(100, 150, 255) or Color3.fromRGB(80, 80, 80)
     carti316.Thickness = 1.0
     carti316.Parent = carti315
 
@@ -3659,14 +3335,14 @@ local function carti314(carti240, index, carti326)
     local carti317 = Instance.new('Frame')
     carti317.Size = UDim2.new(0, 20, 0, 20)
     carti317.Position = UDim2.new(1, -25, 0.5, -10)
-    carti317.BackgroundColor3 = carti326 and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(42, 42, 42)
+    carti317.BackgroundColor3 = carti326 and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(60, 60, 70)
     carti317.BackgroundTransparency = 0.2
     carti317.Visible = carti154.selectionMode
     carti317.Parent = carti315
     Instance.new('UICorner', carti317).CornerRadius = UDim.new(0, 4)
     local carti318 = Instance.new('UIStroke')
     carti318.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti318.Color = carti326 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+    carti318.Color = carti326 and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(80, 80, 80)
     carti318.Thickness = 1.0
     carti318.Parent = carti317
 
@@ -3680,15 +3356,15 @@ local function carti314(carti240, index, carti326)
     carti319.Visible = carti326
     carti319.Parent = carti317
 
-    carti315.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti315.MouseButton1Click, function()
         if carti154.selectionMode then
             local carti320 = not carti154.selectedPlayers[carti240.Name]
             carti154.selectedPlayers[carti240.Name] = carti320
-            carti317.BackgroundColor3 = carti320 and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(42, 42, 42)
-            carti318.Color = carti320 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+            carti317.BackgroundColor3 = carti320 and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(60, 60, 70)
+            carti318.Color = carti320 and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(80, 80, 80)
             carti319.Visible = carti320
-            carti315.BackgroundColor3 = carti320 and Color3.fromRGB(45, 0, 0) or Color3.fromRGB(26, 26, 26)
-            carti316.Color = carti320 and Color3.fromRGB(255, 34, 34) or Color3.fromRGB(60, 60, 60)
+            carti315.BackgroundColor3 = carti320 and Color3.fromRGB(50, 80, 100) or Color3.fromRGB(40, 40, 50)
+            carti316.Color = carti320 and Color3.fromRGB(100, 150, 255) or Color3.fromRGB(80, 80, 80)
         else
             setActiveTab('Control')
             partnerBox.Text = carti240.Name
@@ -3702,7 +3378,7 @@ end
 local function carti321()
     local carti315 = Instance.new('TextButton')
     carti315.Size = UDim2.new(1, -8, 0, 32)
-    carti315.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti315.BackgroundColor3 = Color3.fromRGB(65, 65, 81)
     carti315.BackgroundTransparency = 0.2
     carti315.Text = ''
     carti315.Name = 'SelectFromTradeButton'
@@ -3720,7 +3396,7 @@ local function carti321()
     carti284.TextXAlignment = Enum.TextXAlignment.Left
     carti284.Parent = carti315
 
-    carti315.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti315.MouseButton1Click, function()
         setActiveTab('Control')
         pcall(function()
             local carti322 = carti2.LocalPlayer.PlayerGui.TradeApp.Frame.NegotiationFrame.Header.PartnerFrame.NameLabel.Text
@@ -3760,18 +3436,18 @@ local function carti323()
     carti261.CanvasSize = UDim2.new(0, 0, 0, (#carti325 * 36) + 40)
 end
 
-carti256:GetPropertyChangedSignal("Text"):Connect(carti323)
+cartiRuntime:Connect(carti256:GetPropertyChangedSignal("Text"), carti323)
 
-carti258.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti258.MouseButton1Click, function()
     carti154.selectionMode = not carti154.selectionMode
     if carti154.selectionMode then
         carti258.Text = 'Cancel Selection'
-        carti258.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
-        carti259.Color = Color3.fromRGB(180, 0, 0)
+        carti258.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+        carti259.Color = Color3.fromRGB(255, 100, 100)
     else
         carti258.Text = 'Select Players'
-        carti258.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        carti259.Color = Color3.fromRGB(255, 34, 34)
+        carti258.BackgroundColor3 = Color3.fromRGB(65, 65, 81)
+        carti259.Color = Color3.fromRGB(159, 159, 159)
         carti154.selectedPlayers = {}
     end
     for _, child in ipairs(carti261:GetChildren()) do
@@ -3782,7 +3458,7 @@ carti258.MouseButton1Click:Connect(function()
     end
 end)
 
-carti260.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti260.MouseButton1Click, function()
     if not carti154.selectionMode then return end
     local carti327 = 0
     for playerName, carti326 in pairs(carti154.selectedPlayers) do
@@ -3796,8 +3472,8 @@ carti260.MouseButton1Click:Connect(function()
     end
     carti154.selectionMode = false
     carti258.Text = 'Select Players'
-    carti258.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-    carti259.Color = Color3.fromRGB(255, 34, 34)
+    carti258.BackgroundColor3 = Color3.fromRGB(65, 65, 81)
+    carti259.Color = Color3.fromRGB(159, 159, 159)
     carti154.selectedPlayers = {}
     carti323()
     if carti32 then carti32:hint({ text = 'Blocked ' .. carti327 .. ' player(s)', length = 3, overridable = true }) end
@@ -3806,14 +3482,14 @@ end)
 carti323()
 carti321()
 
-carti2.PlayerAdded:Connect(carti323)
-carti2.PlayerRemoving:Connect(carti323)
+cartiRuntime:Connect(carti2.PlayerAdded, carti323)
+cartiRuntime:Connect(carti2.PlayerRemoving, carti323)
 
 -- ==================== PETS TAB ====================
 local carti328 = carti155['Pets']
 
 local carti329 = Instance.new('Frame')
-carti329.Size = UDim2.new(1, 0, 0, 238)
+carti329.Size = UDim2.new(1, 0, 0, 190)
 carti329.Position = UDim2.new(0, 0, 0, 0)
 carti329.BackgroundTransparency = 1
 carti329.Parent = carti328
@@ -3824,14 +3500,14 @@ carti330.BackgroundTransparency = 1
 carti330.Text = 'Pet Name To Add'
 carti330.Font = Enum.Font.SourceSansSemibold
 carti330.TextSize = 11
-carti330.TextColor3 = Color3.fromRGB(136, 136, 136)
+carti330.TextColor3 = Color3.fromRGB(180, 180, 180)
 carti330.TextXAlignment = Enum.TextXAlignment.Left
 carti330.Parent = carti329
 
 local carti331 = Instance.new('TextBox')
 carti331.Size = UDim2.new(1, 0, 0, 26)
 carti331.Position = UDim2.new(0, 0, 0, 18)
-carti331.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti331.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 carti331.BackgroundTransparency = 0.2
 carti331.Text = ''
 carti331.PlaceholderText = 'Enter pet name...'
@@ -3840,10 +3516,10 @@ carti331.TextSize = 11
 carti331.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti331.ClearTextOnFocus = false
 carti331.Parent = carti329
-Instance.new('UICorner', carti331).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti331).CornerRadius = UDim.new(0, 4)
 local carti332 = Instance.new('UIStroke')
 carti332.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-carti332.Color = Color3.fromRGB(60, 60, 60)
+carti332.Color = Color3.fromRGB(100, 100, 100)
 carti332.Thickness = 0.8
 carti332.Transparency = 0.5
 carti332.Parent = carti331
@@ -3856,10 +3532,10 @@ carti333.Parent = carti329
 
 local carti334 = { 'M', 'N', 'F', 'R' }
 local carti335 = {
-    M = Color3.fromRGB(255, 34, 34),
-    N = Color3.fromRGB(255, 34, 34),
-    F = Color3.fromRGB(255, 34, 34),
-    R = Color3.fromRGB(255, 34, 34),
+    M = Color3.fromRGB(170, 0, 255),
+    N = Color3.fromRGB(0, 255, 100),
+    F = Color3.fromRGB(0, 200, 255),
+    R = Color3.fromRGB(255, 50, 150),
 }
 
 local carti336 = {}
@@ -3868,7 +3544,7 @@ for i, carti295 in ipairs(carti334) do
     carti337.Size = UDim2.new(0.23, 0, 1, 0)
     carti337.Position = UDim2.new((i - 1) * 0.25 + 0.01, 0, 0, 0)
     carti337.Text = carti295
-    carti337.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti337.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
     carti337.BackgroundTransparency = 0.2
     carti337.Font = Enum.Font.FredokaOne
     carti337.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -3884,15 +3560,15 @@ for i, carti295 in ipairs(carti334) do
 
     carti336[carti295] = { button = carti337, stroke = carti316 }
 
-    carti337.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti337.MouseButton1Click, function()
         if carti295 == 'M' and carti75.activeFlags['N'] then return end
         if carti295 == 'N' and carti75.activeFlags['M'] then return end
         carti75.activeFlags[carti295] = not carti75.activeFlags[carti295]
         if carti75.activeFlags[carti295] then
-            carti337.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
-            carti6:Create(carti316, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Color = Color3.fromRGB(255, 34, 34), Thickness = 1.2, Transparency = 0.2 }):Play()
+            carti337.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+            carti6:Create(carti316, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Color = Color3.fromRGB(0, 255, 0), Thickness = 1.2, Transparency = 0.2 }):Play()
         else
-            carti337.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+            carti337.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
             carti6:Create(carti316, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Color = carti335[carti295], Thickness = 1.0, Transparency = 0.5 }):Play()
         end
     end)
@@ -3905,14 +3581,14 @@ carti338.BackgroundTransparency = 1
 carti338.Text = 'Add Pet Delay (s)'
 carti338.Font = Enum.Font.SourceSansSemibold
 carti338.TextSize = 10
-carti338.TextColor3 = Color3.fromRGB(136, 136, 136)
+carti338.TextColor3 = Color3.fromRGB(180, 180, 180)
 carti338.TextXAlignment = Enum.TextXAlignment.Left
 carti338.Parent = carti329
 
 local carti339 = Instance.new('TextBox')
 carti339.Size = UDim2.new(1, 0, 0, 24)
 carti339.Position = UDim2.new(0, 0, 0, 82)
-carti339.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti339.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 carti339.BackgroundTransparency = 0.2
 carti339.Text = tostring(carti69.ADD_PET_REQUEST_DELAY)
 carti339.Font = Enum.Font.SourceSans
@@ -3921,9 +3597,9 @@ carti339.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti339.ClearTextOnFocus = false
 carti339.TextXAlignment = Enum.TextXAlignment.Center
 carti339.Parent = carti329
-Instance.new('UICorner', carti339).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti339).CornerRadius = UDim.new(0, 4)
 
-carti339.FocusLost:Connect(function()
+cartiRuntime:Connect(carti339.FocusLost, function()
     local carti232 = tonumber(carti339.Text)
     if carti232 and carti232 >= 0 then carti69.ADD_PET_REQUEST_DELAY = carti232 else carti339.Text = tostring(carti69.ADD_PET_REQUEST_DELAY) end
 end)
@@ -3931,16 +3607,16 @@ end)
 local carti340 = Instance.new('TextButton')
 carti340.Size = UDim2.new(1, 0, 0, 26)
 carti340.Position = UDim2.new(0, 0, 0, 114)
-carti340.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti340.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
 carti340.BackgroundTransparency = 0.2
 carti340.Text = 'Add Pet to Trade'
 carti340.Font = Enum.Font.FredokaOne
 carti340.TextSize = 12
 carti340.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti340.Parent = carti329
-Instance.new('UICorner', carti340).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti340).CornerRadius = UDim.new(0, 4)
 
-carti340.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti340.MouseButton1Click, function()
     local carti341 = carti331.Text
     if carti341 and carti341 ~= '' then carti105(carti341, carti75.activeFlags) end
 end)
@@ -3948,490 +3624,60 @@ end)
 local carti342 = Instance.new('TextButton')
 carti342.Size = UDim2.new(1, 0, 0, 26)
 carti342.Position = UDim2.new(0, 0, 0, 145)
-carti342.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+carti342.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
 carti342.BackgroundTransparency = 0.2
 carti342.Text = 'Remove Latest Pet'
 carti342.Font = Enum.Font.FredokaOne
 carti342.TextSize = 12
 carti342.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti342.Parent = carti329
-Instance.new('UICorner', carti342).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti342).CornerRadius = UDim.new(0, 4)
 
-carti342.MouseButton1Click:Connect(carti107)
+cartiRuntime:Connect(carti342.MouseButton1Click, carti107)
 
 local carti343 = Instance.new('TextButton')
 carti343.Size = UDim2.new(1, 0, 0, 26)
 carti343.Position = UDim2.new(0, 0, 0, 176)
-carti343.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti343.BackgroundColor3 = Color3.fromRGB(100, 50, 150)
 carti343.BackgroundTransparency = 0.2
 carti343.Text = 'Add Random High-Value Pet'
 carti343.Font = Enum.Font.FredokaOne
 carti343.TextSize = 10
 carti343.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti343.Parent = carti329
-Instance.new('UICorner', carti343).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti343).CornerRadius = UDim.new(0, 4)
 
-carti343.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti343.MouseButton1Click, function()
     carti105(carti80(), carti111())
 end)
 
--- ==================== OFFER UI BUTTON + MODAL ====================
-local ofrBtn = Instance.new('TextButton')
-ofrBtn.Size = UDim2.new(1, 0, 0, 26)
-ofrBtn.Position = UDim2.new(0, 0, 0, 207)
-ofrBtn.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
-ofrBtn.BackgroundTransparency = 0.2
-ofrBtn.Text = 'Offer UI'
-ofrBtn.Font = Enum.Font.FredokaOne
-ofrBtn.TextSize = 11
-ofrBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ofrBtn.Parent = carti329
-Instance.new('UICorner', ofrBtn).CornerRadius = UDim.new(0, 8)
-local ofrBtnStroke = Instance.new('UIStroke')
-ofrBtnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-ofrBtnStroke.Color = Color3.fromRGB(255, 34, 34)
-ofrBtnStroke.Thickness = 1
-ofrBtnStroke.Transparency = 0.2
-ofrBtnStroke.Parent = ofrBtn
-
-local ofrDragConn = nil
-
-local function openOfferUI()
-    if ofrDragConn then
-        ofrDragConn:Disconnect()
-        ofrDragConn = nil
-    end
-    local existing = carti2.LocalPlayer:FindFirstChild('PlayerGui') and carti2.LocalPlayer.PlayerGui:FindFirstChild('CartiHubOfferUI')
-    if existing then existing:Destroy() end
-
-    local ofrSG = Instance.new('ScreenGui')
-    ofrSG.Name = 'CartiHubOfferUI'
-    ofrSG.ResetOnSpawn = false
-    ofrSG.DisplayOrder = 20
-    ofrSG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    ofrSG.Parent = carti2.LocalPlayer:WaitForChild('PlayerGui')
-
-    local ofrWin = Instance.new('Frame')
-    ofrWin.Name = 'Window'
-    ofrWin.Size = UDim2.new(0, 340, 0, 530)
-    ofrWin.Position = UDim2.new(0.5, -170, 0.5, -265)
-    ofrWin.BackgroundColor3 = Color3.fromRGB(13, 13, 13)
-    ofrWin.BorderSizePixel = 0
-    ofrWin.Active = true
-    ofrWin.Draggable = false
-    ofrWin.Parent = ofrSG
-    Instance.new('UICorner', ofrWin).CornerRadius = UDim.new(0, 8)
-    local ofrWinStroke = Instance.new('UIStroke')
-    ofrWinStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    ofrWinStroke.Color = Color3.fromRGB(255, 34, 34)
-    ofrWinStroke.Thickness = 1.5
-    ofrWinStroke.Transparency = 0.15
-    ofrWinStroke.Parent = ofrWin
-
-    local ofrTitle = Instance.new('TextLabel')
-    ofrTitle.Size = UDim2.new(1, -46, 0, 34)
-    ofrTitle.Position = UDim2.new(0, 12, 0, 4)
-    ofrTitle.BackgroundTransparency = 1
-    ofrTitle.Text = 'Offer UI'
-    ofrTitle.Font = Enum.Font.FredokaOne
-    ofrTitle.TextSize = 17
-    ofrTitle.TextColor3 = Color3.fromRGB(255, 60, 60)
-    ofrTitle.TextXAlignment = Enum.TextXAlignment.Left
-    ofrTitle.Active = true
-    ofrTitle.Parent = ofrWin
-
-    -- Drag via title bar
-    local ofrDragging, ofrDragStart, ofrDragStartPos = false, nil, nil
-    local ofrLastInput = nil
-    ofrTitle.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            ofrDragging = true
-            ofrDragStart = inp.Position
-            ofrDragStartPos = ofrWin.Position
-            inp.Changed:Connect(function()
-                if inp.UserInputState == Enum.UserInputState.End then ofrDragging = false end
-            end)
-        end
-    end)
-    ofrTitle.InputChanged:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then
-            ofrLastInput = inp
-        end
-    end)
-    ofrDragConn = carti5.InputChanged:Connect(function(inp)
-        if inp == ofrLastInput and ofrDragging then
-            local delta = inp.Position - ofrDragStart
-            ofrWin.Position = UDim2.new(ofrDragStartPos.X.Scale, ofrDragStartPos.X.Offset + delta.X, ofrDragStartPos.Y.Scale, ofrDragStartPos.Y.Offset + delta.Y)
-        end
-    end)
-
-    local ofrClose = Instance.new('TextButton')
-    ofrClose.Size = UDim2.new(0, 30, 0, 30)
-    ofrClose.Position = UDim2.new(1, -38, 0, 6)
-    ofrClose.BackgroundTransparency = 1
-    ofrClose.BorderSizePixel = 0
-    ofrClose.Text = 'X'
-    ofrClose.Font = Enum.Font.GothamBold
-    ofrClose.TextSize = 16
-    ofrClose.TextColor3 = Color3.fromRGB(255, 100, 100)
-    ofrClose.Parent = ofrWin
-    ofrClose.MouseButton1Click:Connect(function()
-        if ofrDragConn then ofrDragConn:Disconnect() ofrDragConn = nil end
-        ofrSG:Destroy()
-    end)
-
-        local ofrMinimized = false
-    local ofrFullSize = UDim2.new(0, 340, 0, 530)
-    local ofrMinBtn = Instance.new('TextButton')
-    ofrMinBtn.Size = UDim2.new(0, 30, 0, 30)
-    ofrMinBtn.Position = UDim2.new(1, -72, 0, 6)
-    ofrMinBtn.BackgroundTransparency = 1
-    ofrMinBtn.BorderSizePixel = 0
-    ofrMinBtn.Text = '-'
-    ofrMinBtn.Font = Enum.Font.GothamBold
-    ofrMinBtn.TextSize = 18
-    ofrMinBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
-    ofrMinBtn.Parent = ofrWin
-    ofrMinBtn.MouseButton1Click:Connect(function()
-        ofrMinimized = not ofrMinimized
-        ofrMinBtn.Text = ofrMinimized and '+' or '-'
-        local targetSize = ofrMinimized and UDim2.new(0, ofrWin.AbsoluteSize.X, 0, 42) or ofrFullSize
-        carti6:Create(ofrWin, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = targetSize }):Play()
-        for _, child in ipairs(ofrWin:GetChildren()) do
-            if child ~= ofrTitle and child ~= ofrMinBtn and child ~= ofrClose then
-                if child:IsA('GuiObject') then
-                    child.Visible = not ofrMinimized
-                end
-            end
-        end
-    end)
-
-    local ofrSearch = Instance.new('TextBox')
-    ofrSearch.Size = UDim2.new(1, -24, 0, 30)
-    ofrSearch.Position = UDim2.new(0, 12, 0, 42)
-    ofrSearch.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-    ofrSearch.BorderSizePixel = 0
-    ofrSearch.ClearTextOnFocus = false
-    ofrSearch.PlaceholderText = 'Search pets...'
-    ofrSearch.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
-    ofrSearch.Text = ''
-    ofrSearch.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ofrSearch.Font = Enum.Font.Gotham
-    ofrSearch.TextSize = 12
-    ofrSearch.TextXAlignment = Enum.TextXAlignment.Left
-    ofrSearch.Parent = ofrWin
-    Instance.new('UICorner', ofrSearch).CornerRadius = UDim.new(0, 8)
-
-    local ofrList = Instance.new('ScrollingFrame')
-    ofrList.Size = UDim2.new(1, -24, 1, -232)
-    ofrList.Position = UDim2.new(0, 12, 0, 80)
-    ofrList.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
-    ofrList.BackgroundTransparency = 0.2
-    ofrList.BorderSizePixel = 0
-    ofrList.ScrollBarThickness = 4
-    ofrList.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
-    ofrList.ScrollBarImageTransparency = 0.25
-    ofrList.CanvasSize = UDim2.new(0, 0, 0, 0)
-    ofrList.Parent = ofrWin
-    Instance.new('UICorner', ofrList).CornerRadius = UDim.new(0, 8)
-    local ofrGrid = Instance.new('UIGridLayout')
-    ofrGrid.SortOrder = Enum.SortOrder.LayoutOrder
-    ofrGrid.CellSize = UDim2.fromOffset(73, 104)
-    ofrGrid.CellPadding = UDim2.fromOffset(4, 4)
-    ofrGrid.Parent = ofrList
-    local ofrPad = Instance.new('UIPadding')
-    ofrPad.PaddingTop = UDim.new(0, 4)
-    ofrPad.PaddingBottom = UDim.new(0, 4)
-    ofrPad.PaddingLeft = UDim.new(0, 4)
-    ofrPad.PaddingRight = UDim.new(0, 4)
-    ofrPad.Parent = ofrList
-
-    -- Amount row
-    local ofrAmount = 1
-    local ofrAmountLabel = nil
-    local function ofrRefreshAmount()
-        if ofrAmountLabel then ofrAmountLabel.Text = tostring(ofrAmount) end
-    end
-    local ofrAmtRow = Instance.new('Frame')
-    ofrAmtRow.Size = UDim2.new(1, -24, 0, 30)
-    ofrAmtRow.Position = UDim2.new(0, 12, 1, -76)
-    ofrAmtRow.BackgroundTransparency = 1
-    ofrAmtRow.Parent = ofrWin
-    for i, delta in ipairs({ -10, -1, 0, 1, 10 }) do
-        local ab = delta == 0 and Instance.new('TextLabel') or Instance.new('TextButton')
-        ab.Size = UDim2.new(0.185, 0, 1, 0)
-        ab.Position = UDim2.new((i - 1) * 0.20375, 0, 0, 0)
-        ab.BackgroundColor3 = delta == 0 and Color3.fromRGB(45, 0, 0) or Color3.fromRGB(26, 26, 26)
-        ab.BackgroundTransparency = 0
-        ab.BorderSizePixel = 0
-        ab.Text = delta == 0 and '1' or (delta > 0 and '+' .. tostring(delta) or tostring(delta))
-        ab.Font = Enum.Font.FredokaOne
-        ab.TextSize = delta == 0 and 15 or 12
-        ab.TextColor3 = Color3.fromRGB(255, 255, 255)
-        ab.Parent = ofrAmtRow
-        Instance.new('UICorner', ab).CornerRadius = UDim.new(0, 8)
-        if delta == 0 then
-            ofrAmountLabel = ab
-        else
-            ab.MouseButton1Click:Connect(function()
-                ofrAmount = math.clamp(ofrAmount + delta, 1, 999)
-                ofrRefreshAmount()
-            end)
-        end
-    end
-
-    -- Age row
-    local ofrAgeIndex = 1
-    local ofrAgeButtons = {}
-    local ofrAgeNames = { 'Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown' }
-    pcall(function()
-        local db = require(carti3.ClientDB.PetProgressionDB)
-        if db and db.age_names then ofrAgeNames = db.age_names end
-    end)
-    local ofrAgeRow = Instance.new('Frame')
-    ofrAgeRow.Size = UDim2.new(1, -24, 0, 30)
-    ofrAgeRow.Position = UDim2.new(0, 12, 1, -116)
-    ofrAgeRow.BackgroundTransparency = 1
-    ofrAgeRow.Parent = ofrWin
-    local function ofrRefreshAge()
-        for i, ab in ipairs(ofrAgeButtons) do
-            local sel = i == ofrAgeIndex
-            ab.BackgroundColor3 = sel and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(26, 26, 26)
-            ab.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(136, 136, 136)
-        end
-    end
-    for i = 1, 6 do
-        local ab = Instance.new('TextButton')
-        ab.Size = UDim2.new(0.158, 0, 1, 0)
-        ab.Position = UDim2.new((i - 1) * 0.168, 0, 0, 0)
-        ab.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        ab.BorderSizePixel = 0
-        ab.Text = ofrAgeNames[i] or ('Age ' .. i)
-        ab.Font = Enum.Font.GothamBold
-        ab.TextSize = 8
-        ab.TextWrapped = true
-        ab.TextColor3 = Color3.fromRGB(136, 136, 136)
-        ab.Parent = ofrAgeRow
-        Instance.new('UICorner', ab).CornerRadius = UDim.new(0, 8)
-        ofrAgeButtons[i] = ab
-        ab.MouseButton1Click:Connect(function()
-            ofrAgeIndex = i
-            ofrRefreshAge()
-        end)
-    end
-    ofrRefreshAge()
-
-    -- Flag row (N F R M)
-    local ofrFlags = { N = false, F = false, R = false, M = false }
-    local ofrFlagButtons = {}
-    local ofrFlagRow = Instance.new('Frame')
-    ofrFlagRow.Size = UDim2.new(1, -24, 0, 32)
-    ofrFlagRow.Position = UDim2.new(0, 12, 1, -40)
-    ofrFlagRow.BackgroundTransparency = 1
-    ofrFlagRow.Parent = ofrWin
-    local function ofrRefreshFlags()
-        for fk, fb in pairs(ofrFlagButtons) do
-            local on = ofrFlags[fk]
-            fb.BackgroundColor3 = on and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(26, 26, 26)
-            fb.TextColor3 = on and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(136, 136, 136)
-        end
-        ofrRefreshAge()
-    end
-    for i, fk in ipairs({ 'N', 'F', 'R', 'M' }) do
-        local fb = Instance.new('TextButton')
-        fb.Size = UDim2.new(0.235, 0, 1, 0)
-        fb.Position = UDim2.new((i - 1) * 0.255, 0, 0, 0)
-        fb.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        fb.BorderSizePixel = 0
-        fb.Text = fk
-        fb.Font = Enum.Font.FredokaOne
-        fb.TextSize = 14
-        fb.TextColor3 = Color3.fromRGB(136, 136, 136)
-        fb.Parent = ofrFlagRow
-        local fst = Instance.new('UICorner')
-        fst.CornerRadius = UDim.new(0, 8)
-        fst.Parent = fb
-        local fstroke = Instance.new('UIStroke')
-        fstroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        fstroke.Color = Color3.fromRGB(255, 34, 34)
-        fstroke.Thickness = 1
-        fstroke.Transparency = 0.2
-        fstroke.Parent = fb
-        ofrFlagButtons[fk] = fb
-        fb.MouseButton1Click:Connect(function()
-            if fk == 'N' and ofrFlags.M then ofrFlags.M = false
-            elseif fk == 'M' and ofrFlags.N then ofrFlags.N = false end
-            ofrFlags[fk] = not ofrFlags[fk]
-            ofrRefreshFlags()
-        end)
-    end
-    ofrRefreshFlags()
-
-    -- Build pet list
-    local ofrRarityOrder = { legendary = 1, ultra_rare = 2, rare = 3, uncommon = 4, common = 5 }
-    local ofrPetList = {}
-    for id, pet in pairs(carti26.pets or {}) do
-        table.insert(ofrPetList, {
-            id = id,
-            name = tostring(pet.name or id),
-            image = tostring(pet.image or ''),
-            rarity = tostring(pet.rarity or ''):lower(),
-            value = carti55(id, { flyable = false, rideable = false, neon = false, mega_neon = false }),
-        })
-    end
-    table.sort(ofrPetList, function(a, b)
-        if a.value ~= b.value then return a.value > b.value end
-        local ra = ofrRarityOrder[a.rarity] or 99
-        local rb = ofrRarityOrder[b.rarity] or 99
-        if ra ~= rb then return ra < rb end
-        return a.name:lower() < b.name:lower()
-    end)
-
-    for idx, pd in ipairs(ofrPetList) do
-        local cell = Instance.new('ImageButton')
-        cell.Name = 'Pet_' .. tostring(pd.id)
-        cell.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        cell.BackgroundTransparency = 0.08
-        cell.BorderSizePixel = 0
-        cell.Image = ''
-        cell.AutoButtonColor = false
-        cell.LayoutOrder = idx
-        cell:SetAttribute('PetName', pd.name)
-        cell.Parent = ofrList
-        Instance.new('UICorner', cell).CornerRadius = UDim.new(0, 8)
-        local cst = Instance.new('UIStroke')
-        cst.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        cst.Color = pd.rarity == 'legendary' and Color3.fromRGB(255, 34, 34)
-            or pd.rarity == 'ultra_rare' and Color3.fromRGB(255, 80, 80)
-            or pd.rarity == 'rare' and Color3.fromRGB(200, 60, 60)
-            or pd.rarity == 'uncommon' and Color3.fromRGB(150, 40, 40)
-            or Color3.fromRGB(80, 80, 80)
-        cst.Thickness = 1
-        cst.Transparency = 0.2
-        cst.Parent = cell
-
-        local img = Instance.new('ImageLabel')
-        img.Size = UDim2.fromOffset(64, 64)
-        img.Position = UDim2.new(0.5, -32, 0, 4)
-        img.BackgroundTransparency = 1
-        img.BorderSizePixel = 0
-        img.Image = pd.image
-        img.ScaleType = Enum.ScaleType.Fit
-        img.Parent = cell
-
-        local nameLbl = Instance.new('TextLabel')
-        nameLbl.Size = UDim2.new(1, -6, 0, 30)
-        nameLbl.Position = UDim2.new(0, 3, 1, -33)
-        nameLbl.BackgroundTransparency = 1
-        nameLbl.Text = pd.name
-        nameLbl.Font = Enum.Font.GothamBold
-        nameLbl.TextSize = 9
-        nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-        nameLbl.TextWrapped = true
-        nameLbl.TextYAlignment = Enum.TextYAlignment.Center
-        nameLbl.Parent = cell
-
-        cell.MouseButton1Click:Connect(function()
-            if not (carti74.active and carti74.trade) then
-                if carti32 then carti32:hint({ text = 'No active trade', length = 2, overridable = true }) end
-                return
-            end
-            local flags = { N = ofrFlags.N, F = ofrFlags.F, R = ofrFlags.R, M = ofrFlags.M }
-            local ageVal = math.clamp(ofrAgeIndex, 1, 6)
-            task.spawn(function()
-                for _ = 1, ofrAmount do
-                    carti105(pd.name, flags, ageVal)
-                    task.wait(tonumber(carti69.ADD_PET_REQUEST_DELAY) or 0.08)
-                end
-            end)
-        end)
-
-        if idx % 50 == 0 then task.wait() end
-    end
-
-    local function ofrUpdateCanvas()
-        ofrList.CanvasSize = UDim2.new(0, 0, 0, ofrGrid.AbsoluteContentSize.Y + 8)
-    end
-    ofrGrid:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(ofrUpdateCanvas)
-    ofrUpdateCanvas()
-
-    ofrSearch:GetPropertyChangedSignal('Text'):Connect(function()
-        local q = ofrSearch.Text:lower()
-        for _, c in ipairs(ofrList:GetChildren()) do
-            if c:IsA('ImageButton') then
-                c.Visible = q == '' or c:GetAttribute('PetName'):lower():find(q, 1, true) ~= nil
-            end
-        end
-        task.defer(ofrUpdateCanvas)
-    end)
-
-        local ofrResizeGrip = Instance.new('TextButton')
-    ofrResizeGrip.Size = UDim2.new(0, 18, 0, 18)
-    ofrResizeGrip.Position = UDim2.new(1, -18, 1, -18)
-    ofrResizeGrip.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
-    ofrResizeGrip.BackgroundTransparency = 0.4
-    ofrResizeGrip.BorderSizePixel = 0
-    ofrResizeGrip.Text = '//'
-    ofrResizeGrip.Font = Enum.Font.GothamBold
-    ofrResizeGrip.TextSize = 9
-    ofrResizeGrip.TextColor3 = Color3.fromRGB(255, 255, 255)
-    ofrResizeGrip.AutoButtonColor = false
-    ofrResizeGrip.ZIndex = 10
-    ofrResizeGrip.Parent = ofrWin
-    Instance.new('UICorner', ofrResizeGrip).CornerRadius = UDim.new(0, 4)
-
-    local ofrResizing = false
-    local ofrResizeOrigin, ofrResizeOriginSize
-    ofrResizeGrip.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            ofrResizing = true
-            ofrResizeOrigin = inp.Position
-            ofrResizeOriginSize = ofrWin.AbsoluteSize
-            inp.Changed:Connect(function()
-                if inp.UserInputState == Enum.UserInputState.End then ofrResizing = false end
-            end)
-        end
-    end)
-    carti5.InputChanged:Connect(function(inp)
-        if not ofrResizing then return end
-        if inp.UserInputType ~= Enum.UserInputType.MouseMovement and inp.UserInputType ~= Enum.UserInputType.Touch then return end
-        local delta = inp.Position - ofrResizeOrigin
-        local newW = math.clamp(ofrResizeOriginSize.X + delta.X, 280, 720)
-        local newH = math.clamp(ofrResizeOriginSize.Y + delta.Y, 320, 820)
-        ofrWin.Size = UDim2.new(0, newW, 0, newH)
-        ofrFullSize = UDim2.new(0, newW, 0, newH)
-    end)
-end
-
-ofrBtn.MouseButton1Click:Connect(openOfferUI)
-
 local carti344 = Instance.new('Frame')
 carti344.Size = UDim2.new(1, 0, 0, 400)
-carti344.Position = UDim2.new(0, 0, 0, 243)
+carti344.Position = UDim2.new(0, 0, 0, 195)
 carti344.BackgroundTransparency = 1
 carti344.Parent = carti328
 
 local carti345 = Instance.new('TextLabel')
 carti345.Size = UDim2.new(1, 0, 0, 16)
 carti345.BackgroundTransparency = 1
-carti345.Text = 'High-Value Pets (Balloon Unicorn+)'
+carti345.Text = 'High-Value Pets (' .. cartiRuntime.ValueSource .. ')'
 carti345.Font = Enum.Font.SourceSansSemibold
 carti345.TextSize = 11
-carti345.TextColor3 = Color3.fromRGB(255, 100, 100)
+carti345.TextColor3 = Color3.fromRGB(180, 180, 180)
 carti345.TextXAlignment = Enum.TextXAlignment.Left
 carti345.Parent = carti344
 
 local carti346 = Instance.new('ScrollingFrame')
 carti346.Size = UDim2.new(1, 0, 0, 380)
 carti346.Position = UDim2.new(0, 0, 0, 18)
-carti346.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+carti346.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
 carti346.BackgroundTransparency = 0.5
 carti346.BorderSizePixel = 0
 carti346.ScrollBarThickness = 4
-carti346.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+carti346.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 carti346.ScrollBarImageTransparency = 0.5
 carti346.Parent = carti344
-Instance.new('UICorner', carti346).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti346).CornerRadius = UDim.new(0, 4)
 
 local carti347 = Instance.new('UIListLayout')
 carti347.SortOrder = Enum.SortOrder.LayoutOrder
@@ -4448,7 +3694,7 @@ carti348.Parent = carti346
 for i, carti341 in ipairs(carti77) do
     local carti315 = Instance.new('TextButton')
     carti315.Size = UDim2.new(1, -8, 0, 28)
-    carti315.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti315.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti315.BackgroundTransparency = 0.1
     carti315.Text = carti341
     carti315.Font = Enum.Font.GothamBold
@@ -4456,30 +3702,30 @@ for i, carti341 in ipairs(carti77) do
     carti315.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti315.LayoutOrder = i
     carti315.Parent = carti346
-    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 6)
+    
     local carti316 = Instance.new('UIStroke')
     carti316.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti316.Color = Color3.fromRGB(255, 34, 34)
+    carti316.Color = Color3.fromRGB(255, 200, 50)
     carti316.Thickness = 1.5
     carti316.Transparency = 0.2
     carti316.Parent = carti315
 
-    carti315.MouseEnter:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(45, 0, 0) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 80, 80), Transparency = 0 }):Play()
+    cartiRuntime:Connect(carti315.MouseEnter, function()
+        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(70, 65, 95) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 220, 80), Transparency = 0 }):Play()
+    end)
+    
+    cartiRuntime:Connect(carti315.MouseLeave, function()
+        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(55, 50, 75) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 200, 50), Transparency = 0.2 }):Play()
     end)
 
-    carti315.MouseLeave:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(26, 26, 26) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 34, 34), Transparency = 0.2 }):Play()
-    end)
-
-    carti315.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti315.MouseButton1Click, function()
         carti331.Text = carti341
-        carti6:Create(carti332, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(255, 34, 34), Thickness = 1.5 }):Play()
+        carti6:Create(carti332, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(255, 200, 50), Thickness = 1.5 }):Play()
         task.wait(0.5)
-        carti6:Create(carti332, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(60, 60, 60), Thickness = 0.8 }):Play()
+        carti6:Create(carti332, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(100, 100, 100), Thickness = 0.8 }):Play()
     end)
 end
 
@@ -4494,14 +3740,14 @@ carti154.inventoryTitle.BackgroundTransparency = 1
 carti154.inventoryTitle.Text = 'Inventory'
 carti154.inventoryTitle.Font = Enum.Font.FredokaOne
 carti154.inventoryTitle.TextSize = 15
-carti154.inventoryTitle.TextColor3 = Color3.fromRGB(255, 60, 60)
+carti154.inventoryTitle.TextColor3 = Color3.fromRGB(240, 240, 255)
 carti154.inventoryTitle.TextXAlignment = Enum.TextXAlignment.Left
 carti154.inventoryTitle.Parent = carti154.inventoryTab
 
 carti154.inventorySpawnerButton = Instance.new('TextButton')
 carti154.inventorySpawnerButton.Size = UDim2.new(1, 0, 0, 30)
 carti154.inventorySpawnerButton.Position = UDim2.new(0, 0, 0, 32)
-carti154.inventorySpawnerButton.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti154.inventorySpawnerButton.BackgroundColor3 = Color3.fromRGB(100, 50, 150)
 carti154.inventorySpawnerButton.BackgroundTransparency = 0.15
 carti154.inventorySpawnerButton.BorderSizePixel = 0
 carti154.inventorySpawnerButton.Text = 'SPAWNER GUI'
@@ -4510,12 +3756,12 @@ carti154.inventorySpawnerButton.TextSize = 12
 carti154.inventorySpawnerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti154.inventorySpawnerButton.Parent = carti154.inventoryTab
 carti154.inventorySpawnerCorner = Instance.new('UICorner')
-carti154.inventorySpawnerCorner.CornerRadius = UDim.new(0, 8)
+carti154.inventorySpawnerCorner.CornerRadius = UDim.new(0, 4)
 carti154.inventorySpawnerCorner.Parent = carti154.inventorySpawnerButton
 
 carti154.inventorySpawnerStroke = Instance.new('UIStroke')
 carti154.inventorySpawnerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-carti154.inventorySpawnerStroke.Color = Color3.fromRGB(255, 34, 34)
+carti154.inventorySpawnerStroke.Color = Color3.fromRGB(190, 120, 255)
 carti154.inventorySpawnerStroke.Thickness = 1
 carti154.inventorySpawnerStroke.Transparency = 0.25
 carti154.inventorySpawnerStroke.Parent = carti154.inventorySpawnerButton
@@ -4523,7 +3769,7 @@ carti154.inventorySpawnerStroke.Parent = carti154.inventorySpawnerButton
 carti154.inventorySpawnHighTierButton = Instance.new('TextButton')
 carti154.inventorySpawnHighTierButton.Size = UDim2.new(1, 0, 0, 30)
 carti154.inventorySpawnHighTierButton.Position = UDim2.new(0, 0, 0, 72)
-carti154.inventorySpawnHighTierButton.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti154.inventorySpawnHighTierButton.BackgroundColor3 = Color3.fromRGB(125, 76, 180)
 carti154.inventorySpawnHighTierButton.BackgroundTransparency = 0.15
 carti154.inventorySpawnHighTierButton.BorderSizePixel = 0
 carti154.inventorySpawnHighTierButton.Text = 'SPAWN ALL HIGH TIER PETS'
@@ -4531,12 +3777,12 @@ carti154.inventorySpawnHighTierButton.Font = Enum.Font.FredokaOne
 carti154.inventorySpawnHighTierButton.TextSize = 11
 carti154.inventorySpawnHighTierButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti154.inventorySpawnHighTierButton.Parent = carti154.inventoryTab
-Instance.new('UICorner', carti154.inventorySpawnHighTierButton).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti154.inventorySpawnHighTierButton).CornerRadius = UDim.new(0, 4)
 
 carti154.inventoryClearPetsButton = Instance.new('TextButton')
 carti154.inventoryClearPetsButton.Size = UDim2.new(1, 0, 0, 30)
 carti154.inventoryClearPetsButton.Position = UDim2.new(0, 0, 0, 108)
-carti154.inventoryClearPetsButton.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+carti154.inventoryClearPetsButton.BackgroundColor3 = Color3.fromRGB(145, 58, 82)
 carti154.inventoryClearPetsButton.BackgroundTransparency = 0.15
 carti154.inventoryClearPetsButton.BorderSizePixel = 0
 carti154.inventoryClearPetsButton.Text = 'CLEAR ALL PETS'
@@ -4544,35 +3790,35 @@ carti154.inventoryClearPetsButton.Font = Enum.Font.FredokaOne
 carti154.inventoryClearPetsButton.TextSize = 11
 carti154.inventoryClearPetsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti154.inventoryClearPetsButton.Parent = carti154.inventoryTab
-Instance.new('UICorner', carti154.inventoryClearPetsButton).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti154.inventoryClearPetsButton).CornerRadius = UDim.new(0, 4)
 
 carti154.inventoryRenameBox = Instance.new('TextBox')
 carti154.inventoryRenameBox.Size = UDim2.new(0.7, -4, 0, 30)
 carti154.inventoryRenameBox.Position = UDim2.new(0, 0, 0, 148)
-carti154.inventoryRenameBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti154.inventoryRenameBox.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
 carti154.inventoryRenameBox.BorderSizePixel = 0
 carti154.inventoryRenameBox.ClearTextOnFocus = false
 carti154.inventoryRenameBox.PlaceholderText = 'Rename equipped pet...'
-carti154.inventoryRenameBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+carti154.inventoryRenameBox.PlaceholderColor3 = Color3.fromRGB(165, 165, 185)
 carti154.inventoryRenameBox.Text = ''
 carti154.inventoryRenameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti154.inventoryRenameBox.Font = Enum.Font.Gotham
 carti154.inventoryRenameBox.TextSize = 11
 carti154.inventoryRenameBox.TextXAlignment = Enum.TextXAlignment.Left
 carti154.inventoryRenameBox.Parent = carti154.inventoryTab
-Instance.new('UICorner', carti154.inventoryRenameBox).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti154.inventoryRenameBox).CornerRadius = UDim.new(0, 4)
 
 carti154.inventoryRenameButton = Instance.new('TextButton')
 carti154.inventoryRenameButton.Size = UDim2.new(0.3, 0, 0, 30)
 carti154.inventoryRenameButton.Position = UDim2.new(0.7, 0, 0, 148)
-carti154.inventoryRenameButton.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
+carti154.inventoryRenameButton.BackgroundColor3 = Color3.fromRGB(100, 50, 150)
 carti154.inventoryRenameButton.BorderSizePixel = 0
 carti154.inventoryRenameButton.Text = 'RENAME'
 carti154.inventoryRenameButton.Font = Enum.Font.FredokaOne
 carti154.inventoryRenameButton.TextSize = 10
 carti154.inventoryRenameButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti154.inventoryRenameButton.Parent = carti154.inventoryTab
-Instance.new('UICorner', carti154.inventoryRenameButton).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti154.inventoryRenameButton).CornerRadius = UDim.new(0, 4)
 
 carti154.renameInventoryPet = function()
     if carti154.renameNativeLocalPet and carti154.renameNativeLocalPet(carti154.inventoryRenameBox.Text) then
@@ -4587,8 +3833,8 @@ carti154.renameInventoryPet = function()
         end
     end)
 end
-carti154.inventoryRenameButton.MouseButton1Click:Connect(carti154.renameInventoryPet)
-carti154.inventoryRenameBox.FocusLost:Connect(function(carti415)
+cartiRuntime:Connect(carti154.inventoryRenameButton.MouseButton1Click, carti154.renameInventoryPet)
+cartiRuntime:Connect(carti154.inventoryRenameBox.FocusLost, function(carti415)
     if carti415 then carti154.renameInventoryPet() end
 end)
 
@@ -4602,13 +3848,13 @@ carti154.organizeSpawnedPets = function(carti415)
     }
     local carti417 = {}
     local carti418 = carti23.get('inventory')
-    for _, carti419 in pairs(carti418 and carti418.pets or {}) do
+    for unique, carti419 in pairs(carti418 and carti418.pets or {}) do
         if carti419 and carti419.carti_hub_local_pet then
             local carti420 = carti26.pets and carti26.pets[carti419.kind]
             local carti421 = carti420 and carti415 and carti415[carti420.name]
             local carti422 = carti421 and tonumber(carti421['rvalue - nopotion'] or carti421.rvalue) or 0
             table.insert(carti417, {
-                pet = carti419,
+                unique = unique,
                 rarity = carti416[(carti420 and carti420.rarity) or 'common'] or 0,
                 value = carti422,
                 name = (carti420 and carti420.name) or tostring(carti419.kind),
@@ -4627,7 +3873,8 @@ carti154.organizeSpawnedPets = function(carti415)
     local carti423 = os.time() * 1000
     carti161('inventory', function(carti424)
         for carti425, carti426 in ipairs(carti417) do
-            carti426.pet.newness_order = carti423 + carti426.rarity * 100000 + (#carti417 - carti425)
+            local pet = carti424.pets and carti424.pets[carti426.unique]
+            if pet then pet.newness_order = carti423 + carti426.rarity * 100000 + (#carti417 - carti425) end
         end
         return carti424
     end)
@@ -4692,7 +3939,6 @@ carti154.spawnAllHighTierPets = function()
                 return carti423
             end)
             carti154.organizeSpawnedPets(carti416)
-            carti_saveSpawnedPets()
         end
 
         carti154.inventoryHighTierSpawnBusy = false
@@ -4722,7 +3968,6 @@ carti154.clearAllSpawnedPets = function()
         end
         return carti416
     end)
-    carti_clearSavedPets()
     carti154.inventoryClearPetsButton.Text = carti415 > 0 and ('CLEARED ' .. tostring(carti415) .. ' PETS') or 'NO SPAWNED PETS'
     task.delay(1.4, function()
         if carti154.inventoryClearPetsButton.Parent then
@@ -4731,8 +3976,210 @@ carti154.clearAllSpawnedPets = function()
     end)
 end
 
-carti154.inventorySpawnHighTierButton.MouseButton1Click:Connect(carti154.spawnAllHighTierPets)
-carti154.inventoryClearPetsButton.MouseButton1Click:Connect(carti154.clearAllSpawnedPets)
+cartiRuntime:Connect(carti154.inventorySpawnHighTierButton.MouseButton1Click, carti154.spawnAllHighTierPets)
+cartiRuntime:Connect(carti154.inventoryClearPetsButton.MouseButton1Click, carti154.clearAllSpawnedPets)
+
+carti154.inventoryToySpawnerTitle = Instance.new('TextLabel')
+carti154.inventoryToySpawnerTitle.Size = UDim2.new(1, 0, 0, 20)
+carti154.inventoryToySpawnerTitle.Position = UDim2.new(0, 0, 0, 188)
+carti154.inventoryToySpawnerTitle.BackgroundTransparency = 1
+carti154.inventoryToySpawnerTitle.Text = 'Toy Inventory Previews (not equippable)'
+carti154.inventoryToySpawnerTitle.Font = Enum.Font.FredokaOne
+carti154.inventoryToySpawnerTitle.TextSize = 11
+carti154.inventoryToySpawnerTitle.TextColor3 = Color3.fromRGB(225, 190, 255)
+carti154.inventoryToySpawnerTitle.TextXAlignment = Enum.TextXAlignment.Left
+carti154.inventoryToySpawnerTitle.Parent = carti154.inventoryTab
+
+carti154.inventoryTopValueToys = {
+    { id = 'candy_cannon', value = 138 },
+    { id = 'flying_broomstick', value = 66 },
+    { id = 'tombstone', value = 36 },
+    { id = 'antler_chew_toy', value = 14 },
+    { id = 'pumpkin_toy', value = 12 },
+}
+
+carti154.spawnToyById = function(carti415)
+    local carti416 = carti26.toys and carti26.toys[carti415]
+    if not carti416 then
+        return false
+    end
+    local carti417 = '2_' .. carti7:GenerateGUID(false)
+    carti161('inventory', function(carti418)
+        carti418.toys = carti418.toys or {}
+        carti418.toys[carti417] = {
+            unique = carti417,
+            category = 'toys',
+            carti_hub_local_preview = true,
+            id = carti415,
+            kind = carti415,
+            properties = {},
+            newness_order = os.time() * 1000,
+        }
+        return carti418
+    end)
+    return true
+end
+
+carti154.inventoryToySearchBox = Instance.new('TextBox')
+carti154.inventoryToySearchBox.Size = UDim2.new(0.7, -4, 0, 26)
+carti154.inventoryToySearchBox.Position = UDim2.new(0, 0, 0, 212)
+carti154.inventoryToySearchBox.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+carti154.inventoryToySearchBox.BorderSizePixel = 0
+carti154.inventoryToySearchBox.ClearTextOnFocus = false
+carti154.inventoryToySearchBox.PlaceholderText = 'Preview toy by name...'
+carti154.inventoryToySearchBox.PlaceholderColor3 = Color3.fromRGB(165, 165, 185)
+carti154.inventoryToySearchBox.Text = ''
+carti154.inventoryToySearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+carti154.inventoryToySearchBox.Font = Enum.Font.Gotham
+carti154.inventoryToySearchBox.TextSize = 10
+carti154.inventoryToySearchBox.TextXAlignment = Enum.TextXAlignment.Left
+carti154.inventoryToySearchBox.Parent = carti154.inventoryTab
+Instance.new('UICorner', carti154.inventoryToySearchBox).CornerRadius = UDim.new(0, 4)
+
+carti154.inventoryToySpawnButton = Instance.new('TextButton')
+carti154.inventoryToySpawnButton.Size = UDim2.new(0.3, 0, 0, 26)
+carti154.inventoryToySpawnButton.Position = UDim2.new(0.7, 0, 0, 212)
+carti154.inventoryToySpawnButton.BackgroundColor3 = Color3.fromRGB(112, 62, 168)
+carti154.inventoryToySpawnButton.BorderSizePixel = 0
+carti154.inventoryToySpawnButton.Text = 'PREVIEW'
+carti154.inventoryToySpawnButton.Font = Enum.Font.FredokaOne
+carti154.inventoryToySpawnButton.TextSize = 10
+carti154.inventoryToySpawnButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+carti154.inventoryToySpawnButton.Parent = carti154.inventoryTab
+Instance.new('UICorner', carti154.inventoryToySpawnButton).CornerRadius = UDim.new(0, 4)
+
+carti154.spawnToyByName = function()
+    local carti415 = carti154.inventoryToySearchBox.Text:lower():gsub('^%s+', ''):gsub('%s+$', '')
+    if carti415 == '' then
+        return false
+    end
+    local carti416 = nil
+    for carti417, carti418 in pairs(carti26.toys or {}) do
+        local carti419 = tostring(carti418.name or carti417):lower()
+        if carti419 == carti415 then
+            carti416 = carti417
+            break
+        end
+        if not carti416 and carti419:find(carti415, 1, true) then
+            carti416 = carti417
+        end
+    end
+    if carti416 and carti154.spawnToyById(carti416) then
+        carti154.inventoryToySearchBox.Text = ''
+        carti154.inventoryToySearchBox.PlaceholderText = 'Toy preview added'
+        task.delay(1, function()
+            if carti154.inventoryToySearchBox.Parent then
+                carti154.inventoryToySearchBox.PlaceholderText = 'Preview toy by name...'
+            end
+        end)
+        return true
+    end
+    carti154.inventoryToySearchBox.PlaceholderText = 'Toy not found'
+    task.delay(1, function()
+        if carti154.inventoryToySearchBox.Parent then
+            carti154.inventoryToySearchBox.PlaceholderText = 'Preview toy by name...'
+        end
+    end)
+    return false
+end
+
+cartiRuntime:Connect(carti154.inventoryToySpawnButton.MouseButton1Click, carti154.spawnToyByName)
+cartiRuntime:Connect(carti154.inventoryToySearchBox.FocusLost, function(carti415)
+    if carti415 then carti154.spawnToyByName() end
+end)
+
+carti154.inventoryToySpawnerButtons = {}
+for carti415, carti416 in ipairs(carti154.inventoryTopValueToys) do
+    local carti417 = carti26.toys and carti26.toys[carti416.id]
+    if carti417 then
+        local carti418 = Instance.new('TextButton')
+        carti418.Size = UDim2.new(1, -27, 0, 25)
+        carti418.Position = UDim2.new(0, 27, 0, 244 + (carti415 - 1) * 27)
+        local carti419 = ({
+            legendary = Color3.fromRGB(144, 104, 42),
+            ultra_rare = Color3.fromRGB(83, 95, 164),
+            rare = Color3.fromRGB(48, 105, 171),
+            uncommon = Color3.fromRGB(56, 128, 79),
+            common = Color3.fromRGB(82, 82, 98),
+        })[carti417.rarity or 'common'] or Color3.fromRGB(67, 47, 98)
+        carti418.BackgroundColor3 = carti419
+        carti418.BackgroundTransparency = 0.12
+        carti418.BorderSizePixel = 0
+        carti418.Text = tostring(carti417.name or carti416.id)
+        carti418.Font = Enum.Font.GothamBold
+        carti418.TextSize = 10
+        carti418.TextColor3 = Color3.fromRGB(245, 240, 255)
+        carti418.TextXAlignment = Enum.TextXAlignment.Left
+        carti418.Parent = carti154.inventoryTab
+        Instance.new('UICorner', carti418).CornerRadius = UDim.new(0, 4)
+
+        local carti420 = Instance.new('ImageLabel')
+        carti420.Size = UDim2.new(0, 25, 0, 25)
+        carti420.Position = UDim2.new(0, 0, 0, 244 + (carti415 - 1) * 27)
+        carti420.BackgroundColor3 = carti419
+        carti420.BackgroundTransparency = 0.12
+        carti420.BorderSizePixel = 0
+        carti420.Image = tostring(carti417.image or '')
+        carti420.ScaleType = Enum.ScaleType.Fit
+        carti420.ZIndex = carti418.ZIndex
+        carti420.Parent = carti154.inventoryTab
+        Instance.new('UICorner', carti420).CornerRadius = UDim.new(0, 4)
+
+        local carti421 = Instance.new('UIPadding')
+        carti421.PaddingLeft = UDim.new(0, 7)
+        carti421.Parent = carti418
+        local carti422 = Instance.new('UIStroke')
+        carti422.Color = carti419:Lerp(Color3.fromRGB(255, 255, 255), 0.4)
+        carti422.Transparency = 0.18
+        carti422.Thickness = 1
+        carti422.Parent = carti418
+        carti154.inventoryToySpawnerButtons[carti416.id] = carti418
+
+        cartiRuntime:Connect(carti418.MouseButton1Click, function()
+            if carti154.spawnToyById(carti416.id) then
+                local carti423 = carti418.Text
+                carti418.Text = 'PREVIEW ADDED: ' .. tostring(carti417.name or carti416.id)
+                task.delay(0.9, function()
+                    if carti418.Parent then
+                        carti418.Text = carti423
+                    end
+                end)
+            end
+        end)
+    end
+end
+
+carti154.inventorySpawnTopToysButton = Instance.new('TextButton')
+carti154.inventorySpawnTopToysButton.Name = 'SpawnTopToysButton'
+carti154.inventorySpawnTopToysButton.Size = UDim2.new(1, 0, 0, 30)
+carti154.inventorySpawnTopToysButton.Position = UDim2.new(0, 0, 0, 384)
+carti154.inventorySpawnTopToysButton.BackgroundColor3 = Color3.fromRGB(118, 67, 180)
+carti154.inventorySpawnTopToysButton.BorderSizePixel = 0
+carti154.inventorySpawnTopToysButton.Text = 'ADD TOY PREVIEWS (5X EACH)'
+carti154.inventorySpawnTopToysButton.TextColor3 = Color3.fromRGB(255, 245, 255)
+carti154.inventorySpawnTopToysButton.Font = Enum.Font.GothamBold
+carti154.inventorySpawnTopToysButton.TextSize = 10
+carti154.inventorySpawnTopToysButton.Parent = carti154.inventoryTab
+Instance.new('UICorner', carti154.inventorySpawnTopToysButton).CornerRadius = UDim.new(0, 5)
+
+cartiRuntime:Connect(carti154.inventorySpawnTopToysButton.MouseButton1Click, function()
+    local carti415 = 0
+    for _, carti416 in ipairs(carti154.inventoryTopValueToys) do
+        for _ = 1, 5 do
+            if carti154.spawnToyById(carti416.id) then
+                carti415 += 1
+            end
+        end
+    end
+
+    local carti417 = carti154.inventorySpawnTopToysButton.Text
+    carti154.inventorySpawnTopToysButton.Text = 'ADDED ' .. tostring(carti415) .. ' TOY PREVIEWS'
+    task.delay(1.2, function()
+        if carti154.inventorySpawnTopToysButton.Parent then
+            carti154.inventorySpawnTopToysButton.Text = carti417
+        end
+    end)
+end)
 
 carti154.openInventorySpawner = function()
     if carti154.inventorySpawnerDragConnection then
@@ -4755,17 +4202,17 @@ carti154.openInventorySpawner = function()
     carti417.Name = 'Window'
     carti417.Size = UDim2.new(0, 340, 0, 530)
     carti417.Position = UDim2.new(0.5, -170, 0.5, -265)
-    carti417.BackgroundColor3 = Color3.fromRGB(13, 13, 13)
+    carti417.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
     carti417.BorderSizePixel = 0
     carti417.Active = true
     carti417.Draggable = false
     carti417.Parent = carti416
     local carti418 = Instance.new('UICorner')
-    carti418.CornerRadius = UDim.new(0, 8)
+    carti418.CornerRadius = UDim.new(0, 6)
     carti418.Parent = carti417
     local carti419 = Instance.new('UIStroke')
     carti419.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti419.Color = Color3.fromRGB(255, 34, 34)
+    carti419.Color = Color3.fromRGB(150, 95, 230)
     carti419.Thickness = 1.5
     carti419.Transparency = 0.15
     carti419.Parent = carti417
@@ -4777,7 +4224,7 @@ carti154.openInventorySpawner = function()
     carti420.Text = 'Pet Spawner'
     carti420.Font = Enum.Font.FredokaOne
     carti420.TextSize = 17
-    carti420.TextColor3 = Color3.fromRGB(255, 60, 60)
+    carti420.TextColor3 = Color3.fromRGB(245, 240, 255)
     carti420.TextXAlignment = Enum.TextXAlignment.Left
     carti420.Active = true
     carti420.Parent = carti417
@@ -4786,22 +4233,22 @@ carti154.openInventorySpawner = function()
     local carti441 = nil
     local carti442 = nil
     local carti443 = nil
-    carti420.InputBegan:Connect(function(carti444)
+    cartiRuntime:Connect(carti420.InputBegan, function(carti444)
         if carti444.UserInputType == Enum.UserInputType.MouseButton1 or carti444.UserInputType == Enum.UserInputType.Touch then
             carti440 = true
             carti442 = carti444.Position
             carti443 = carti417.Position
-            carti444.Changed:Connect(function()
+            cartiRuntime:Connect(carti444.Changed, function()
                 if carti444.UserInputState == Enum.UserInputState.End then carti440 = false end
             end)
         end
     end)
-    carti420.InputChanged:Connect(function(carti445)
+    cartiRuntime:Connect(carti420.InputChanged, function(carti445)
         if carti445.UserInputType == Enum.UserInputType.MouseMovement or carti445.UserInputType == Enum.UserInputType.Touch then
             carti441 = carti445
         end
     end)
-    carti154.inventorySpawnerDragConnection = carti5.InputChanged:Connect(function(carti446)
+    carti154.inventorySpawnerDragConnection = cartiRuntime:Connect(carti5.InputChanged, function(carti446)
         if carti446 == carti441 and carti440 then
             local carti447 = carti446.Position - carti442
             carti417.Position = UDim2.new(carti443.X.Scale, carti443.X.Offset + carti447.X, carti443.Y.Scale, carti443.Y.Offset + carti447.Y)
@@ -4816,9 +4263,9 @@ carti154.openInventorySpawner = function()
     carti421.Text = 'X'
     carti421.Font = Enum.Font.GothamBold
     carti421.TextSize = 16
-    carti421.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti421.TextColor3 = Color3.fromRGB(220, 190, 255)
     carti421.Parent = carti417
-    carti421.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti421.MouseButton1Click, function()
         if carti154.inventorySpawnerDragConnection then
             carti154.inventorySpawnerDragConnection:Disconnect()
             carti154.inventorySpawnerDragConnection = nil
@@ -4829,11 +4276,11 @@ carti154.openInventorySpawner = function()
     local carti422 = Instance.new('TextBox')
     carti422.Size = UDim2.new(1, -24, 0, 30)
     carti422.Position = UDim2.new(0, 12, 0, 42)
-    carti422.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+    carti422.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
     carti422.BorderSizePixel = 0
     carti422.ClearTextOnFocus = false
     carti422.PlaceholderText = 'Search pets...'
-    carti422.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    carti422.PlaceholderColor3 = Color3.fromRGB(165, 165, 185)
     carti422.Text = ''
     carti422.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti422.Font = Enum.Font.Gotham
@@ -4841,22 +4288,22 @@ carti154.openInventorySpawner = function()
     carti422.TextXAlignment = Enum.TextXAlignment.Left
     carti422.Parent = carti417
     local carti423 = Instance.new('UICorner')
-    carti423.CornerRadius = UDim.new(0, 8)
+    carti423.CornerRadius = UDim.new(0, 4)
     carti423.Parent = carti422
 
     local carti424 = Instance.new('ScrollingFrame')
     carti424.Size = UDim2.new(1, -24, 1, -232)
     carti424.Position = UDim2.new(0, 12, 0, 80)
-    carti424.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+    carti424.BackgroundColor3 = Color3.fromRGB(23, 23, 32)
     carti424.BackgroundTransparency = 0.2
     carti424.BorderSizePixel = 0
     carti424.ScrollBarThickness = 4
-    carti424.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+    carti424.ScrollBarImageColor3 = Color3.fromRGB(150, 95, 230)
     carti424.ScrollBarImageTransparency = 0.25
     carti424.CanvasSize = UDim2.new(0, 0, 0, 0)
     carti424.Parent = carti417
     local carti425 = Instance.new('UICorner')
-    carti425.CornerRadius = UDim.new(0, 8)
+    carti425.CornerRadius = UDim.new(0, 4)
     carti425.Parent = carti424
     local carti426 = Instance.new('UIGridLayout')
     carti426.SortOrder = Enum.SortOrder.LayoutOrder
@@ -4870,126 +4317,44 @@ carti154.openInventorySpawner = function()
     carti427.PaddingRight = UDim.new(0, 4)
     carti427.Parent = carti424
 
-    carti154.inventorySpawnerSelectedPets = {}
-    carti154.inventorySpawnerMinVal = 1
-    carti154.inventorySpawnerMaxVal = 1
-
+    carti154.inventorySpawnerAmount = 1
     local carti463 = Instance.new('Frame')
     carti463.Size = UDim2.new(1, -24, 0, 30)
     carti463.Position = UDim2.new(0, 12, 1, -76)
     carti463.BackgroundTransparency = 1
     carti463.Parent = carti417
-
-    local minBox = Instance.new('TextBox')
-    minBox.Size = UDim2.new(0.30, -2, 1, 0)
-    minBox.Position = UDim2.new(0, 0, 0, 0)
-    minBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-    minBox.BorderSizePixel = 0
-    minBox.ClearTextOnFocus = false
-    minBox.Text = '1'
-    minBox.PlaceholderText = 'Min'
-    minBox.Font = Enum.Font.FredokaOne
-    minBox.TextSize = 12
-    minBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    minBox.TextXAlignment = Enum.TextXAlignment.Center
-    minBox.Parent = carti463
-    Instance.new('UICorner', minBox).CornerRadius = UDim.new(0, 8)
-    minBox.FocusLost:Connect(function()
-        local v = tonumber(minBox.Text)
-        if v and v >= 1 then carti154.inventorySpawnerMinVal = v else minBox.Text = tostring(carti154.inventorySpawnerMinVal) end
-    end)
-
-    local maxBox = Instance.new('TextBox')
-    maxBox.Size = UDim2.new(0.30, -2, 1, 0)
-    maxBox.Position = UDim2.new(0.32, 0, 0, 0)
-    maxBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-    maxBox.BorderSizePixel = 0
-    maxBox.ClearTextOnFocus = false
-    maxBox.Text = '1'
-    maxBox.PlaceholderText = 'Max'
-    maxBox.Font = Enum.Font.FredokaOne
-    maxBox.TextSize = 12
-    maxBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    maxBox.TextXAlignment = Enum.TextXAlignment.Center
-    maxBox.Parent = carti463
-    Instance.new('UICorner', maxBox).CornerRadius = UDim.new(0, 8)
-    maxBox.FocusLost:Connect(function()
-        local v = tonumber(maxBox.Text)
-        if v and v >= 1 then carti154.inventorySpawnerMaxVal = v else maxBox.Text = tostring(carti154.inventorySpawnerMaxVal) end
-    end)
-
-    local spawnBtn = Instance.new('TextButton')
-    spawnBtn.Size = UDim2.new(0.36, 0, 1, 0)
-    spawnBtn.Position = UDim2.new(0.64, 0, 0, 0)
-    spawnBtn.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
-    spawnBtn.BorderSizePixel = 0
-    spawnBtn.Text = 'SPAWN'
-    spawnBtn.Font = Enum.Font.FredokaOne
-    spawnBtn.TextSize = 12
-    spawnBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    spawnBtn.Parent = carti463
-    Instance.new('UICorner', spawnBtn).CornerRadius = UDim.new(0, 8)
-    local spawnBtnStroke = Instance.new('UIStroke')
-    spawnBtnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    spawnBtnStroke.Color = Color3.fromRGB(255, 34, 34)
-    spawnBtnStroke.Thickness = 1
-    spawnBtnStroke.Transparency = 0.2
-    spawnBtnStroke.Parent = spawnBtn
-
-    carti154.inventorySpawnerSpawn = function()
-        local selList = {}
-        for petId in pairs(carti154.inventorySpawnerSelectedPets) do
-            table.insert(selList, petId)
+    carti154.inventorySpawnerAmountLabel = nil
+    carti154.refreshInventorySpawnerAmount = function()
+        if carti154.inventorySpawnerAmountLabel then
+            carti154.inventorySpawnerAmountLabel.Text = tostring(carti154.inventorySpawnerAmount)
         end
-        if #selList == 0 then
-            if carti32 then carti32:hint({ text = 'Select at least one pet', length = 2, overridable = true }) end
-            return
-        end
-        local minVal = math.min(carti154.inventorySpawnerMinVal, carti154.inventorySpawnerMaxVal)
-        local maxVal = math.max(carti154.inventorySpawnerMinVal, carti154.inventorySpawnerMaxVal)
-        local totalSpawned = 0
-        local rng = Random.new()
-        carti161('inventory', function(carti454)
-            carti454.pets = carti454.pets or {}
-            for _, petId in ipairs(selList) do
-                local amount = minVal == maxVal and minVal or rng:NextInteger(minVal, maxVal)
-                totalSpawned = totalSpawned + amount
-                for carti455 = 1, amount do
-                    local carti456 = math.clamp(carti154.inventorySpawnerAgeIndex or 1, 1, 6)
-                    if carti154.inventorySpawnerFlags.M then
-                        carti154.inventorySpawnerMegaSequence = (carti154.inventorySpawnerMegaSequence or 0) + 1
-                    end
-                    local carti457 = '2_' .. carti7:GenerateGUID(false)
-                    carti454.pets[carti457] = {
-                        unique = carti457,
-                        category = 'pets',
-                        carti_hub_local_pet = true,
-                        id = petId,
-                        kind = petId,
-                        properties = {
-                            rideable = carti154.inventorySpawnerFlags.R,
-                            flyable = carti154.inventorySpawnerFlags.F,
-                            neon = carti154.inventorySpawnerFlags.N,
-                            mega_neon = carti154.inventorySpawnerFlags.M,
-                            pet_trick_level = 0,
-                            friendship_level = 0,
-                            xp = carti154.inventorySpawnerFlags.M
-                                and (carti154.inventorySpawnerMegaSequence / 10000)
-                                or 0,
-                            age = carti456,
-                        },
-                        newness_order = carti154.inventorySpawnerFlags.M
-                            and (os.time() * 1000 + carti154.inventorySpawnerMegaSequence)
-                            or 0,
-                    }
-                end
-            end
-            return carti454
-        end)
-        carti_saveSpawnedPets()
-        -- if carti32 then carti32:hint({ text = 'Spawned ' .. tostring(totalSpawned) .. ' pets (' .. tostring(#selList) .. ' types)', length = 3, overridable = true }) end
     end
-    spawnBtn.MouseButton1Click:Connect(carti154.inventorySpawnerSpawn)
+
+    for carti464, carti465 in ipairs({ -10, -1, 0, 1, 10 }) do
+        local carti466 = carti465 == 0 and Instance.new('TextLabel') or Instance.new('TextButton')
+        carti466.Size = UDim2.new(0.185, 0, 1, 0)
+        carti466.Position = UDim2.new((carti464 - 1) * 0.20375, 0, 0, 0)
+        carti466.BackgroundColor3 = carti465 == 0 and Color3.fromRGB(76, 54, 112) or Color3.fromRGB(48, 48, 62)
+        carti466.BackgroundTransparency = 0
+        carti466.BorderSizePixel = 0
+        carti466.Text = carti465 == 0 and '1' or (carti465 > 0 and '+' .. tostring(carti465) or tostring(carti465))
+        carti466.Font = Enum.Font.FredokaOne
+        carti466.TextSize = carti465 == 0 and 15 or 12
+        carti466.TextColor3 = Color3.fromRGB(255, 255, 255)
+        carti466.Parent = carti463
+        local carti467 = Instance.new('UICorner')
+        carti467.CornerRadius = UDim.new(0, 4)
+        carti467.Parent = carti466
+
+        if carti465 == 0 then
+            carti154.inventorySpawnerAmountLabel = carti466
+        else
+            cartiRuntime:Connect(carti466.MouseButton1Click, function()
+                carti154.inventorySpawnerAmount = math.clamp(carti154.inventorySpawnerAmount + carti465, 1, 999)
+                carti154.refreshInventorySpawnerAmount()
+            end)
+        end
+    end
 
     local carti490 = {
         age_names = { 'Newborn', 'Junior', 'Pre-Teen', 'Teen', 'Post-Teen', 'Full Grown' },
@@ -5012,26 +4377,26 @@ carti154.openInventorySpawner = function()
         for carti493, carti494 in ipairs(carti154.inventorySpawnerAgeButtons) do
             local carti495 = carti493 == carti154.inventorySpawnerAgeIndex
             carti494.Text = carti492[carti493] or ('Age ' .. tostring(carti493))
-            carti494.BackgroundColor3 = carti495 and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(26, 26, 26)
-            carti494.TextColor3 = carti495 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(136, 136, 136)
+            carti494.BackgroundColor3 = carti495 and Color3.fromRGB(120, 72, 175) or Color3.fromRGB(48, 48, 62)
+            carti494.TextColor3 = carti495 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(195, 195, 215)
         end
     end
     for carti492 = 1, 6 do
         local carti493 = Instance.new('TextButton')
         carti493.Size = UDim2.new(0.158, 0, 1, 0)
         carti493.Position = UDim2.new((carti492 - 1) * 0.168, 0, 0, 0)
-        carti493.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+        carti493.BackgroundColor3 = Color3.fromRGB(48, 48, 62)
         carti493.BorderSizePixel = 0
         carti493.Font = Enum.Font.GothamBold
         carti493.TextSize = 8
         carti493.TextWrapped = true
-        carti493.TextColor3 = Color3.fromRGB(136, 136, 136)
+        carti493.TextColor3 = Color3.fromRGB(195, 195, 215)
         carti493.Parent = carti491
         local carti494 = Instance.new('UICorner')
-        carti494.CornerRadius = UDim.new(0, 8)
+        carti494.CornerRadius = UDim.new(0, 4)
         carti494.Parent = carti493
         carti154.inventorySpawnerAgeButtons[carti492] = carti493
-        carti493.MouseButton1Click:Connect(function()
+        cartiRuntime:Connect(carti493.MouseButton1Click, function()
             carti154.inventorySpawnerAgeIndex = carti492
             carti154.refreshInventorySpawnerAge()
         end)
@@ -5048,8 +4413,8 @@ carti154.openInventorySpawner = function()
     carti154.refreshInventorySpawnerFlags = function()
         for carti455, carti456 in pairs(carti154.inventorySpawnerFlagButtons) do
             local carti457 = carti154.inventorySpawnerFlags[carti455]
-            carti456.BackgroundColor3 = carti457 and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(26, 26, 26)
-            carti456.TextColor3 = carti457 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(136, 136, 136)
+            carti456.BackgroundColor3 = carti457 and Color3.fromRGB(120, 72, 175) or Color3.fromRGB(48, 48, 62)
+            carti456.TextColor3 = carti457 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(195, 195, 215)
         end
         if carti154.refreshInventorySpawnerAge then
             carti154.refreshInventorySpawnerAge()
@@ -5060,28 +4425,28 @@ carti154.openInventorySpawner = function()
         local carti460 = Instance.new('TextButton')
         carti460.Size = UDim2.new(0.235, 0, 1, 0)
         carti460.Position = UDim2.new((carti458 - 1) * 0.255, 0, 0, 0)
-        carti460.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+        carti460.BackgroundColor3 = Color3.fromRGB(48, 48, 62)
         carti460.BorderSizePixel = 0
         carti460.Text = carti459
         carti460.Font = Enum.Font.FredokaOne
         carti460.TextSize = 14
-        carti460.TextColor3 = Color3.fromRGB(136, 136, 136)
+        carti460.TextColor3 = Color3.fromRGB(195, 195, 215)
         carti460.Parent = carti454
         local carti461 = Instance.new('UICorner')
-        carti461.CornerRadius = UDim.new(0, 8)
+        carti461.CornerRadius = UDim.new(0, 4)
         carti461.Parent = carti460
         local carti462 = Instance.new('UIStroke')
         carti462.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        carti462.Color = carti459 == 'N' and Color3.fromRGB(255, 34, 34)
-            or carti459 == 'F' and Color3.fromRGB(255, 34, 34)
-            or carti459 == 'R' and Color3.fromRGB(255, 34, 34)
-            or Color3.fromRGB(255, 34, 34)
+        carti462.Color = carti459 == 'N' and Color3.fromRGB(175, 95, 255)
+            or carti459 == 'F' and Color3.fromRGB(70, 175, 255)
+            or carti459 == 'R' and Color3.fromRGB(255, 100, 175)
+            or Color3.fromRGB(255, 185, 50)
         carti462.Thickness = 1
         carti462.Transparency = 0.2
         carti462.Parent = carti460
         carti154.inventorySpawnerFlagButtons[carti459] = carti460
 
-        carti460.MouseButton1Click:Connect(function()
+        cartiRuntime:Connect(carti460.MouseButton1Click, function()
             if carti459 == 'N' and carti154.inventorySpawnerFlags.M then
                 carti154.inventorySpawnerFlags.M = false
             elseif carti459 == 'M' and carti154.inventorySpawnerFlags.N then
@@ -5119,7 +4484,7 @@ carti154.openInventorySpawner = function()
     table.sort(carti428, function(carti432, carti433)
         local carti434 = carti429[carti432.rarity] or 99
         local carti435 = carti429[carti433.rarity] or 99
-        if carti432.value ~= carti433.value then return carti432.value > carti433.value end
+        if carti432.value ~= carti433.value then return (carti432.value or -math.huge) > (carti433.value or -math.huge) end
         if carti434 == carti435 then return carti432.name:lower() < carti433.name:lower() end
         return carti434 < carti435
     end)
@@ -5127,7 +4492,7 @@ carti154.openInventorySpawner = function()
     for carti436, carti437 in ipairs(carti428) do
         local carti438 = Instance.new('ImageButton')
         carti438.Name = 'Pet_' .. tostring(carti437.id)
-        carti438.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+        carti438.BackgroundColor3 = Color3.fromRGB(54, 45, 76)
         carti438.BackgroundTransparency = 0.08
         carti438.BorderSizePixel = 0
         carti438.Image = ''
@@ -5136,15 +4501,15 @@ carti154.openInventorySpawner = function()
         carti438:SetAttribute('PetName', carti437.name)
         carti438.Parent = carti424
         local carti439 = Instance.new('UICorner')
-        carti439.CornerRadius = UDim.new(0, 8)
+        carti439.CornerRadius = UDim.new(0, 5)
         carti439.Parent = carti438
         local carti448 = Instance.new('UIStroke')
         carti448.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        carti448.Color = carti437.rarity == 'legendary' and Color3.fromRGB(255, 34, 34)
-            or carti437.rarity == 'ultra_rare' and Color3.fromRGB(255, 80, 80)
-            or carti437.rarity == 'rare' and Color3.fromRGB(200, 60, 60)
-            or carti437.rarity == 'uncommon' and Color3.fromRGB(150, 40, 40)
-            or Color3.fromRGB(80, 80, 80)
+        carti448.Color = carti437.rarity == 'legendary' and Color3.fromRGB(255, 185, 50)
+            or carti437.rarity == 'ultra_rare' and Color3.fromRGB(255, 90, 110)
+            or carti437.rarity == 'rare' and Color3.fromRGB(70, 165, 255)
+            or carti437.rarity == 'uncommon' and Color3.fromRGB(100, 225, 125)
+            or Color3.fromRGB(170, 170, 180)
         carti448.Thickness = 1
         carti448.Transparency = 0.2
         carti448.Parent = carti438
@@ -5170,20 +4535,40 @@ carti154.openInventorySpawner = function()
         carti450.TextYAlignment = Enum.TextYAlignment.Center
         carti450.Parent = carti438
 
-        carti438.MouseButton1Click:Connect(function()
-            if carti154.inventorySpawnerSelectedPets[carti437.id] then
-                carti154.inventorySpawnerSelectedPets[carti437.id] = nil
-                carti448.Color = carti437.rarity == 'legendary' and Color3.fromRGB(255, 34, 34)
-                    or carti437.rarity == 'ultra_rare' and Color3.fromRGB(255, 80, 80)
-                    or carti437.rarity == 'rare' and Color3.fromRGB(200, 60, 60)
-                    or carti437.rarity == 'uncommon' and Color3.fromRGB(150, 40, 40)
-                    or Color3.fromRGB(80, 80, 80)
-                carti448.Thickness = 1
-            else
-                carti154.inventorySpawnerSelectedPets[carti437.id] = true
-                carti448.Color = Color3.fromRGB(255, 215, 0)
-                carti448.Thickness = 2.5
-            end
+        cartiRuntime:Connect(carti438.MouseButton1Click, function()
+            carti161('inventory', function(carti454)
+                carti454.pets = carti454.pets or {}
+                for carti455 = 1, carti154.inventorySpawnerAmount do
+                    local carti456 = math.clamp(carti154.inventorySpawnerAgeIndex or 1, 1, 6)
+                    if carti154.inventorySpawnerFlags.M then
+                        carti154.inventorySpawnerMegaSequence = (carti154.inventorySpawnerMegaSequence or 0) + 1
+                    end
+                    local carti457 = '2_' .. carti7:GenerateGUID(false)
+                    carti454.pets[carti457] = {
+                        unique = carti457,
+                        category = 'pets',
+                        carti_hub_local_pet = true,
+                        id = carti437.id,
+                        kind = carti437.id,
+                        properties = {
+                            rideable = carti154.inventorySpawnerFlags.R,
+                            flyable = carti154.inventorySpawnerFlags.F,
+                            neon = carti154.inventorySpawnerFlags.N,
+                            mega_neon = carti154.inventorySpawnerFlags.M,
+                            pet_trick_level = 0,
+                            friendship_level = 0,
+                            xp = carti154.inventorySpawnerFlags.M
+                                and (carti154.inventorySpawnerMegaSequence / 10000)
+                                or 0,
+                            age = carti456,
+                        },
+                        newness_order = carti154.inventorySpawnerFlags.M
+                            and (os.time() * 1000 + carti154.inventorySpawnerMegaSequence)
+                            or 0,
+                    }
+                end
+                return carti454
+            end)
         end)
 
         if carti436 % 50 == 0 then task.wait() end
@@ -5192,9 +4577,9 @@ carti154.openInventorySpawner = function()
     local carti451 = function()
         carti424.CanvasSize = UDim2.new(0, 0, 0, carti426.AbsoluteContentSize.Y + 8)
     end
-    carti426:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(carti451)
+    cartiRuntime:Connect(carti426:GetPropertyChangedSignal('AbsoluteContentSize'), carti451)
     carti451()
-    carti422:GetPropertyChangedSignal('Text'):Connect(function()
+    cartiRuntime:Connect(carti422:GetPropertyChangedSignal('Text'), function()
         local carti452 = carti422.Text:lower()
         for _, carti453 in ipairs(carti424:GetChildren()) do
             if carti453:IsA('ImageButton') then
@@ -5205,7 +4590,7 @@ carti154.openInventorySpawner = function()
     end)
 end
 
-carti154.inventorySpawnerButton.MouseButton1Click:Connect(carti154.openInventorySpawner)
+cartiRuntime:Connect(carti154.inventorySpawnerButton.MouseButton1Click, carti154.openInventorySpawner)
 
 carti154.installLocalPetEquipFlow = function()
     carti154.clientToolManager = carti20('ClientToolManager')
@@ -5216,6 +4601,8 @@ carti154.installLocalPetEquipFlow = function()
 
     if carti454 and carti454.manager == carti154.clientToolManager then
         pcall(carti454.clear)
+        if carti454.characterAdded then carti454.characterAdded:Disconnect() end
+        if carti454.characterRemoving then carti454.characterRemoving:Disconnect() end
         if carti454.equip then
             carti154.clientToolManager.equip = carti454.equip
         end
@@ -5281,6 +4668,8 @@ carti154.installLocalPetEquipFlow = function()
     end
 
     carti154.clearNativeLocalPetEntity = function()
+        carti154.nativeLocalPetGeneration = (carti154.nativeLocalPetGeneration or 0) + 1
+        carti154.nativeLocalPetRequestedUnique = nil
         local carti454 = carti2.LocalPlayer.Character
         local carti455 = carti454 and carti454:FindFirstChild('HumanoidRootPart')
         if carti154.setNativeLocalPetStopMountButton then
@@ -5303,7 +4692,7 @@ carti154.installLocalPetEquipFlow = function()
             carti154.nativeLocalPetRideTargetAttachment = nil
         end
         local carti456 = carti454 and carti454:FindFirstChildOfClass('Humanoid')
-        if carti456 then
+        if carti456 and carti154.nativeLocalPetMountStateId then
             pcall(function() carti456.Sit = false end)
         end
         if carti154.nativeLocalPetRidePetHumanoid then
@@ -5614,6 +5003,9 @@ carti154.installLocalPetEquipFlow = function()
     end
 
     carti154.setNativeLocalPetRiding = function(carti454, carti455)
+        if carti454 and carti154.nativeLocalPetMountStateId then
+            carti154.setNativeLocalPetRiding(false)
+        end
         local carti476 = carti455
         local carti455 = carti154.nativeLocalPetModel
         local carti456 = carti154.nativeLocalPetState
@@ -5673,7 +5065,7 @@ carti154.installLocalPetEquipFlow = function()
             carti154.nativeLocalPetRideWeld = nil
             if carti154.nativeLocalPetRideScale then
                 pcall(function()
-                    carti455:ScaleTo(1)
+                    carti455:ScaleTo(carti154.nativeLocalPetRideScale)
                 end)
                 carti154.nativeLocalPetRideScale = nil
             end
@@ -5711,6 +5103,7 @@ carti154.installLocalPetEquipFlow = function()
         local carti460 = carti26.pets and carti26.pets[carti154.nativeLocalPetWrapper.pet_id]
         local carti461 = (carti460 and carti460.max_ride_scale) or 2
         local carti462 = carti455:GetExtentsSize().Y
+        local originalScale = carti455:GetScale()
         pcall(function()
             carti455:ScaleTo(carti461)
         end)
@@ -5718,7 +5111,7 @@ carti154.installLocalPetEquipFlow = function()
         if carti463 > carti462 then
             carti455:PivotTo(carti455:GetPivot() * CFrame.new(0, (carti463 - carti462) * 0.5, 0))
         end
-        carti154.nativeLocalPetRideScale = carti461
+        carti154.nativeLocalPetRideScale = originalScale
         if carti476 == 'PetBeingFlown' then
             carti154.attachNativeLocalPetFlightWings()
         else
@@ -5738,7 +5131,7 @@ carti154.installLocalPetEquipFlow = function()
             carti467.Parent = carti459
             carti154.nativeLocalPetRideTargetAttachment = carti467
             carti459.CFrame = carti465.WorldCFrame * carti466
-            carti154.nativeLocalPetRideFollowConnection = carti4.RenderStepped:Connect(function()
+            carti154.nativeLocalPetRideFollowConnection = cartiRuntime:Connect(carti4.RenderStepped, function()
                 if carti465.Parent and carti459.Parent then
                     local carti468 = carti465.WorldCFrame * carti466
                     if carti154.nativeLocalPetMountStateId == 'PetBeingFlown' then
@@ -5829,7 +5222,7 @@ carti154.installLocalPetEquipFlow = function()
     end
 
     carti154.clearLocalPetEquipState = function()
-        local carti454 = false
+        local carti454 = carti154.nativeLocalPetModel ~= nil or carti154.nativeLocalPetRequestedUnique ~= nil
         local carti455 = carti23.get('equip_manager')
         for _, carti456 in ipairs(carti455 and carti455.pets or {}) do
             if carti456.carti_hub_local_pet then
@@ -5855,8 +5248,11 @@ carti154.installLocalPetEquipFlow = function()
         return carti454
     end
 
-    carti154.spawnNativeLocalPetEntity = function(carti454)
+    carti154.spawnNativeLocalPetEntity = function(carti454, generation)
+        if generation and generation ~= carti154.nativeLocalPetGeneration then return false end
         carti154.clearNativeLocalPetEntity()
+        generation = carti154.nativeLocalPetGeneration
+        carti154.nativeLocalPetRequestedUnique = carti454.unique
 
         local carti455 = carti2.LocalPlayer.Character
         local carti456 = carti455 and carti455:FindFirstChild('HumanoidRootPart')
@@ -5864,6 +5260,10 @@ carti154.installLocalPetEquipFlow = function()
 
         local carti457 = carti42(carti454.kind)
         if not carti457 then return end
+        if generation ~= carti154.nativeLocalPetGeneration or carti455 ~= carti2.LocalPlayer.Character then
+            carti457:Destroy()
+            return false
+        end
 
         local carti458 = carti457:FindFirstChild('HumanoidRootPart')
         if not carti458 then
@@ -5903,20 +5303,9 @@ carti154.installLocalPetEquipFlow = function()
         carti462.RigidityEnabled = true
         carti462.Parent = carti458
 
-        local carti481 = nil
-        local carti482 = workspace:FindFirstChild('Pets')
-        if carti482 then
-            for _, carti483 in ipairs(carti482:GetChildren()) do
-                local carti484 = carti154.charWrapperClient.get(carti483)
-                if carti484 and carti484.is_pet then
-                    carti481 = table.clone(carti484)
-                    break
-                end
-            end
-        end
-
-        if not carti481 then
-            carti481 = {
+        -- Build a fresh wrapper; another player's wrapper contains shared state
+        -- and gameplay fields that do not belong to this local cosmetic.
+        local carti481 = {
                 is_pet = true,
                 index = 1,
                 unique = 0,
@@ -5924,7 +5313,6 @@ carti154.installLocalPetEquipFlow = function()
                 location = {},
                 are_colors_sealed = false,
             }
-        end
 
         if carti481 then
             carti481.char = carti457
@@ -5933,7 +5321,7 @@ carti154.installLocalPetEquipFlow = function()
             carti481.entity_controller = carti2.LocalPlayer
             carti481.pet_unique = carti454.unique
             carti481.pet_id = carti454.kind
-            carti481.unique = -math.floor(os.clock() * 1000000)
+            carti481.unique = carti154.nextLocalWrapperId()
             carti481.index = 1
             carti481.rp_name = ''
             carti481.location = {
@@ -5954,13 +5342,23 @@ carti154.installLocalPetEquipFlow = function()
         local carti485, carti486 = pcall(function()
             return carti154.petEntityManager.create_pet_entity(carti457, carti26.pets and carti26.pets[carti454.kind])
         end)
-        if not carti485 then
+        if not carti485 or generation ~= carti154.nativeLocalPetGeneration then
+            pcall(function() carti154.petEntityManager.remove_pet_entity_by_char(carti457) end)
             pcall(function()
                 carti154.charWrapperClient.register_debug_wrapper(carti457, nil)
             end)
             carti459:Destroy()
             carti457:Destroy()
             return
+        end
+
+        if carti454.properties and carti454.properties.neon == true then
+            pcall(function()
+                carti20('PetNeonHelper').apply_neon(
+                    carti457.PetModel,
+                    carti26.pets[carti454.kind].neon_parts
+                )
+            end)
         end
 
         carti154.nativeLocalPetModel = carti457
@@ -5982,17 +5380,19 @@ carti154.installLocalPetEquipFlow = function()
                 table.insert(carti487, carti154.nativeLocalPetState)
                 return carti487
             end)
+            if generation ~= carti154.nativeLocalPetGeneration then return false end
             carti161('pet_char_wrappers', function(carti487)
                 table.insert(carti487, carti481)
                 return carti487
             end)
+            if generation ~= carti154.nativeLocalPetGeneration then return false end
         end
 
         local carti474 = carti457:FindFirstChildOfClass('Humanoid')
         if carti474 then
             carti474.AutoRotate = false
         end
-        carti154.nativeLocalPetMotionConnection = carti4.Heartbeat:Connect(function()
+        carti154.nativeLocalPetMotionConnection = cartiRuntime:Connect(carti4.Heartbeat, function()
             if not carti457.Parent or not carti458.Parent or not carti456.Parent then return end
             local carti475 = carti154.petEntityManager.get_pet_entity(carti457)
             if not carti475 then return end
@@ -6012,9 +5412,17 @@ carti154.installLocalPetEquipFlow = function()
             carti475.move_state.is_moving = carti476
             carti475.speed_state.calculated_speed = carti476 and math.max(carti456.AssemblyLinearVelocity.Magnitude, 16) or 0
         end)
+        return true
     end
 
+    carti154.isToyPreview = function(item)
+        return item and item.category == 'toys' and item.carti_hub_local_preview == true
+    end
     carti154.clientToolManager.equip = function(carti454, carti455)
+        if carti154.isToyPreview(carti454) then
+            if carti32 then carti32:hint({text = 'This toy is an inventory preview and cannot be equipped.', length = 3, overridable = true}) end
+            return false
+        end
         if not (carti454 and carti454.carti_hub_local_pet) then
             carti154.clearLocalPetEquipState()
             return carti154.originalClientToolEquip(carti454, carti455)
@@ -6038,11 +5446,30 @@ carti154.installLocalPetEquipFlow = function()
             table.insert(carti457.pets, 1, carti454)
             return carti457
         end)
-        task.spawn(carti154.spawnNativeLocalPetEntity, carti454)
+        carti154.clearNativeLocalPetEntity()
+        local generation = carti154.nativeLocalPetGeneration
+        carti154.nativeLocalPetRequestedUnique = carti454.unique
+        task.spawn(function()
+            local ok, result = xpcall(function()
+                return carti154.spawnNativeLocalPetEntity(carti454, generation)
+            end, debug.traceback)
+            -- spawnNativeLocalPetEntity advances this generation once. If it
+            -- changed again, a newer equip/cancel owns the state already.
+            if carti154.nativeLocalPetGeneration ~= generation + 1 then return end
+            if not ok or result ~= true then
+                carti154.clearLocalPetEquipState()
+                carti154.nativeLocalPetError = ok and 'Pet model is unavailable.' or tostring(result)
+                warn('[Carti ADM] ' .. carti154.nativeLocalPetError)
+                if carti32 then carti32:hint({text = 'Pet could not load. Try equipping it again.', length = 3, overridable = true}) end
+            else
+                carti154.nativeLocalPetError = nil
+            end
+        end)
         return true
     end
 
     carti154.clientToolManager.unequip = function(carti454, carti455)
+        if carti154.isToyPreview(carti454) then return true end
         if not (carti454 and carti454.carti_hub_local_pet) then
             return carti154.originalClientToolUnequip(carti454, carti455)
         end
@@ -6056,11 +5483,14 @@ carti154.installLocalPetEquipFlow = function()
             end
             return carti456
         end)
-        carti154.clearNativeLocalPetEntity()
+        if carti154.nativeLocalPetUnique == carti454.unique or carti154.nativeLocalPetRequestedUnique == carti454.unique then
+            carti154.clearNativeLocalPetEntity()
+        end
         return true
     end
 
     carti154.clientToolManager.backpack_equip = function(carti454, carti455)
+        if carti154.isToyPreview(carti454) then return carti154.clientToolManager.equip(carti454, carti455) end
         if carti454 and carti454.category == 'pets' and not carti454.carti_hub_local_pet then
             if carti154.clearLocalPetEquipState() then
                 task.wait()
@@ -6070,7 +5500,7 @@ carti154.installLocalPetEquipFlow = function()
     end
 
     local carti462 = carti20('PetActions')
-    carti462.cartiHubOriginalRidePet = carti462.cartiHubOriginalRidePet or carti462.ride_pet
+    carti154.originalPetActions = {ride_pet = carti462.ride_pet, fly_pet = carti462.fly_pet, pick_up = carti462.pick_up}
     carti462.ride_pet = function(carti463, ...)
         if carti463
             and carti463.char == carti154.nativeLocalPetModel
@@ -6084,10 +5514,9 @@ carti154.installLocalPetEquipFlow = function()
                 return carti154.setNativeLocalPetRiding(true, 'PetBeingRidden')
             end
         end
-        return carti462.cartiHubOriginalRidePet(carti463, ...)
+        return carti154.originalPetActions.ride_pet(carti463, ...)
     end
 
-    carti462.cartiHubOriginalFlyPet = carti462.cartiHubOriginalFlyPet or carti462.fly_pet
     carti462.fly_pet = function(carti463, ...)
         if carti463
             and carti463.char == carti154.nativeLocalPetModel
@@ -6101,10 +5530,9 @@ carti154.installLocalPetEquipFlow = function()
                 return carti154.setNativeLocalPetRiding(true, 'PetBeingFlown')
             end
         end
-        return carti462.cartiHubOriginalFlyPet(carti463, ...)
+        return carti154.originalPetActions.fly_pet(carti463, ...)
     end
 
-    carti462.cartiHubOriginalPickUpPet = carti462.cartiHubOriginalPickUpPet or carti462.pick_up
     carti462.pick_up = function(carti463, ...)
         if carti463
             and carti463.char == carti154.nativeLocalPetModel
@@ -6114,9 +5542,26 @@ carti154.installLocalPetEquipFlow = function()
             end)
             return carti154.setNativeLocalPetHeld(not carti154.nativeLocalPetHeld)
         end
-        return carti462.cartiHubOriginalPickUpPet(carti463, ...)
+        return carti154.originalPetActions.pick_up(carti463, ...)
     end
 
+    carti154.nativeLocalPetCharacterRemoving = cartiRuntime:Connect(carti2.LocalPlayer.CharacterRemoving, function()
+        carti154.clearNativeLocalPetEntity()
+    end)
+    carti154.nativeLocalPetCharacterAdded = cartiRuntime:Connect(carti2.LocalPlayer.CharacterAdded, function(character)
+        if not character:WaitForChild('HumanoidRootPart', 10) or character ~= carti2.LocalPlayer.Character then return end
+        local equipment = carti23.get('equip_manager')
+        for _, item in ipairs(equipment and equipment.pets or {}) do
+            if item.carti_hub_local_pet then
+                carti154.spawnNativeLocalPetEntity(item, carti154.nativeLocalPetGeneration)
+                break
+            end
+        end
+    end)
+
+    cartiRuntime:OwnHooks(carti154.clientToolManager, {equip = carti154.originalClientToolEquip,
+        unequip = carti154.originalClientToolUnequip, backpack_equip = carti154.originalClientToolBackpackEquip})
+    cartiRuntime:OwnHooks(carti462, carti154.originalPetActions)
     carti453.CartiHubAdoptMeLocalPetHooks = {
         manager = carti154.clientToolManager,
         equip = carti154.originalClientToolEquip,
@@ -6124,10 +5569,127 @@ carti154.installLocalPetEquipFlow = function()
         backpackEquip = carti154.originalClientToolBackpackEquip,
         clear = carti154.clearLocalPetEquipState,
         stopMountButton = carti154.nativeLocalPetStopMountButton,
+        characterAdded = carti154.nativeLocalPetCharacterAdded,
+        characterRemoving = carti154.nativeLocalPetCharacterRemoving,
     }
 end
 
 carti154.installLocalPetEquipFlow()
+
+cartiRuntime.State = carti154
+cartiRuntime.Spawn = CreateFakePlayerCharacterFromPARTNER_NAME
+cartiRuntime.Predict = carti161
+cartiRuntime.ClearNPCs = carti154.clearNPCs
+cartiRuntime.TradeState = carti74
+cartiRuntime:OnShutdown(function()
+    if carti154.clearLocalPetEquipState then carti154.clearLocalPetEquipState() end
+end)
+cartiRuntime:OnShutdown(function()
+    carti154.clearNPCs()
+end)
+cartiRuntime:OnShutdown(function()
+    for _, model in pairs(carti154.npcAvatarCache) do model:Destroy() end
+    for _, model in pairs(carti41) do model:Destroy() end
+end)
+cartiRuntime:OnShutdown(function()
+    for _, tween in pairs(carti154.pulsationTweens) do tween:Cancel() end
+    if carti154.activeTabPulseTween then carti154.activeTabPulseTween:Cancel() end
+end)
+cartiRuntime:OnShutdown(function()
+    if carti154.inventorySpawnerGui then carti154.inventorySpawnerGui:Destroy() end
+end)
+cartiRuntime:OnShutdown(function()
+    if carti154.nativeLocalPetStopMountButton then carti22.apps.ExtraButtonsApp:unregister_button(carti154.nativeLocalPetStopMountButton) end
+end)
+
+
+pcall(function()
+    local carti453 = (getgenv and getgenv()) or _G
+    if carti453.CartiHubRealTradePetTransferWatcher then
+        carti453.CartiHubRealTradePetTransferWatcher.Enabled = false
+        carti453.CartiHubRealTradePetTransferWatcher = nil
+    end
+end)
+
+-- Remove a client-spawned pet after it has been transferred through a fake trade.
+carti154.removeTransferredLocalPets = function(carti453)
+    if type(carti453) ~= 'table' or next(carti453) == nil then
+        return 0
+    end
+
+    local carti454 = carti154.nativeLocalPetUnique
+    local pending = carti154.nativeLocalPetRequestedUnique
+    if (carti454 and carti453[carti454]) or (pending and carti453[pending]) then
+        if carti154.setNativeLocalPetRiding then
+            carti154.setNativeLocalPetRiding(false)
+        end
+        if carti154.clearNativeLocalPetHeld then
+            carti154.clearNativeLocalPetHeld()
+        end
+        if carti154.clearLocalPetEquipState then
+            carti154.clearLocalPetEquipState()
+        end
+    end
+
+    carti161('equip_manager', function(value)
+        for i = #(value.pets or {}), 1, -1 do
+            if carti453[value.pets[i].unique] and value.pets[i].carti_hub_local_pet then table.remove(value.pets, i) end
+        end
+        return value
+    end)
+    local carti455 = 0
+    carti161('inventory', function(carti456)
+        carti456.pets = carti456.pets or {}
+        for carti457 in pairs(carti453) do
+            local carti458 = carti456.pets[carti457]
+            if carti458 and carti458.carti_hub_local_pet then
+                carti456.pets[carti457] = nil
+                carti455 += 1
+            end
+        end
+        return carti456
+    end)
+    return carti455
+end
+
+carti154.addReceivedFakeTradePets = function(carti453)
+    if type(carti453) ~= 'table' then
+        return 0
+    end
+
+    local carti454 = 0
+    carti161('inventory', function(carti455)
+        carti455.pets = carti455.pets or {}
+        for _, carti456 in ipairs(carti453) do
+            local carti457 = carti456 and (carti456.kind or carti456.id)
+            if carti456 and carti456.category == 'pets' and carti457 and carti26.pets and carti26.pets[carti457] then
+                local carti458 = '2_' .. carti7:GenerateGUID(false)
+                carti455.pets[carti458] = {
+                    unique = carti458,
+                    category = 'pets',
+                    carti_hub_local_pet = true,
+                    id = carti457,
+                    kind = carti457,
+                    properties = carti24.deep_copy(carti456.properties or {}),
+                    newness_order = os.time() * 1000 + carti454,
+                }
+                carti454 += 1
+            end
+        end
+        return carti455
+    end)
+
+    if carti454 > 0 and carti154.organizeSpawnedPets then
+        carti154.organizeSpawnedPets(carti53)
+    end
+    return carti454
+end
+
+pcall(function()
+    local carti459 = (getgenv and getgenv()) or _G
+    carti459.CartiHubRemoveTransferredLocalPets = carti154.removeTransferredLocalPets
+    carti459.CartiHubAddReceivedFakeTradePets = carti154.addReceivedFakeTradePets
+end)
 
 -- ==================== USERS TAB ====================
 local carti349 = carti155['Users']
@@ -6135,7 +5697,7 @@ local carti349 = carti155['Users']
 local carti350 = Instance.new('TextBox')
 carti350.Size = UDim2.new(1, 0, 0, 26)
 carti350.Position = UDim2.new(0, 0, 0, 0)
-carti350.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti350.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 carti350.BackgroundTransparency = 0.2
 carti350.Text = ''
 carti350.PlaceholderText = 'Search users...'
@@ -6145,19 +5707,19 @@ carti350.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti350.ClearTextOnFocus = false
 carti350.TextXAlignment = Enum.TextXAlignment.Left
 carti350.Parent = carti349
-Instance.new('UICorner', carti350).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti350).CornerRadius = UDim.new(0, 4)
 
 local carti351 = Instance.new('ScrollingFrame')
 carti351.Size = UDim2.new(1, 0, 0, 180)
 carti351.Position = UDim2.new(0, 0, 0, 30)
-carti351.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+carti351.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
 carti351.BackgroundTransparency = 0.5
 carti351.BorderSizePixel = 0
 carti351.ScrollBarThickness = 4
-carti351.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+carti351.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 carti351.ScrollBarImageTransparency = 0.5
 carti351.Parent = carti349
-Instance.new('UICorner', carti351).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti351).CornerRadius = UDim.new(0, 4)
 
 local carti352 = Instance.new('UIListLayout')
 carti352.SortOrder = Enum.SortOrder.LayoutOrder
@@ -6178,14 +5740,14 @@ carti354.BackgroundTransparency = 1
 carti354.Text = 'Chat Messages'
 carti354.Font = Enum.Font.SourceSansSemibold
 carti354.TextSize = 11
-carti354.TextColor3 = Color3.fromRGB(255, 100, 100)
+carti354.TextColor3 = Color3.fromRGB(180, 180, 180)
 carti354.TextXAlignment = Enum.TextXAlignment.Left
 carti354.Parent = carti349
 
 local carti355 = Instance.new('TextBox')
 carti355.Size = UDim2.new(1, 0, 0, 26)
 carti355.Position = UDim2.new(0, 0, 0, 233)
-carti355.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+carti355.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 carti355.BackgroundTransparency = 0.2
 carti355.Text = ''
 carti355.PlaceholderText = 'Enter custom message...'
@@ -6195,21 +5757,21 @@ carti355.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti355.ClearTextOnFocus = false
 carti355.TextXAlignment = Enum.TextXAlignment.Left
 carti355.Parent = carti349
-Instance.new('UICorner', carti355).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti355).CornerRadius = UDim.new(0, 4)
 
 local carti356 = Instance.new('TextButton')
 carti356.Size = UDim2.new(1, 0, 0, 26)
 carti356.Position = UDim2.new(0, 0, 0, 263)
-carti356.BackgroundColor3 = Color3.fromRGB(0, 100, 50)
+carti356.BackgroundColor3 = Color3.fromRGB(50, 120, 50)
 carti356.BackgroundTransparency = 0.2
 carti356.Text = 'Send Chat Message'
 carti356.Font = Enum.Font.FredokaOne
 carti356.TextSize = 12
 carti356.TextColor3 = Color3.fromRGB(255, 255, 255)
 carti356.Parent = carti349
-Instance.new('UICorner', carti356).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti356).CornerRadius = UDim.new(0, 4)
 
-carti356.MouseButton1Click:Connect(function()
+cartiRuntime:Connect(carti356.MouseButton1Click, function()
     local carti357 = carti355.Text
     if carti357 and carti357 ~= '' then
         carti116(carti357)
@@ -6224,21 +5786,21 @@ carti358.BackgroundTransparency = 1
 carti358.Text = 'Quick Messages'
 carti358.Font = Enum.Font.SourceSansSemibold
 carti358.TextSize = 11
-carti358.TextColor3 = Color3.fromRGB(255, 100, 100)
+carti358.TextColor3 = Color3.fromRGB(180, 180, 180)
 carti358.TextXAlignment = Enum.TextXAlignment.Left
 carti358.Parent = carti349
 
 local carti359 = Instance.new('ScrollingFrame')
 carti359.Size = UDim2.new(1, 0, 0, 300)
 carti359.Position = UDim2.new(0, 0, 0, 313)
-carti359.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+carti359.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
 carti359.BackgroundTransparency = 0.5
 carti359.BorderSizePixel = 0
 carti359.ScrollBarThickness = 4
-carti359.ScrollBarImageColor3 = Color3.fromRGB(180, 0, 0)
+carti359.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 carti359.ScrollBarImageTransparency = 0.5
 carti359.Parent = carti349
-Instance.new('UICorner', carti359).CornerRadius = UDim.new(0, 8)
+Instance.new('UICorner', carti359).CornerRadius = UDim.new(0, 4)
 
 local carti360 = Instance.new('UIListLayout')
 carti360.SortOrder = Enum.SortOrder.LayoutOrder
@@ -6255,7 +5817,7 @@ carti361.Parent = carti359
 for i, carti357 in ipairs(carti69.CHAT_MESSAGES) do
     local carti315 = Instance.new('TextButton')
     carti315.Size = UDim2.new(1, -8, 0, 24)
-    carti315.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti315.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti315.BackgroundTransparency = 0.1
     carti315.Text = '  ' .. carti357
     carti315.Font = Enum.Font.GothamMedium
@@ -6265,26 +5827,26 @@ for i, carti357 in ipairs(carti69.CHAT_MESSAGES) do
     carti315.TextXAlignment = Enum.TextXAlignment.Left
     carti315.LayoutOrder = i
     carti315.Parent = carti359
-    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 5)
+    
     local carti316 = Instance.new('UIStroke')
     carti316.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti316.Color = Color3.fromRGB(255, 34, 34)
+    carti316.Color = Color3.fromRGB(255, 200, 50)
     carti316.Thickness = 1.5
     carti316.Transparency = 0.2
     carti316.Parent = carti315
 
-    carti315.MouseEnter:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(45, 0, 0) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.15), { Color = Color3.fromRGB(255, 80, 80), Transparency = 0 }):Play()
+    cartiRuntime:Connect(carti315.MouseEnter, function()
+        carti6:Create(carti315, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(70, 65, 95) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.15), { Color = Color3.fromRGB(255, 220, 80), Transparency = 0 }):Play()
+    end)
+    
+    cartiRuntime:Connect(carti315.MouseLeave, function()
+        carti6:Create(carti315, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(55, 50, 75) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.15), { Color = Color3.fromRGB(255, 200, 50), Transparency = 0.2 }):Play()
     end)
 
-    carti315.MouseLeave:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(26, 26, 26) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.15), { Color = Color3.fromRGB(255, 34, 34), Transparency = 0.2 }):Play()
-    end)
-
-    carti315.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti315.MouseButton1Click, function()
         carti116(carti357)
     end)
 end
@@ -6294,7 +5856,7 @@ carti359.CanvasSize = UDim2.new(0, 0, 0, (#carti69.CHAT_MESSAGES * 27) + 8)
 local function carti362(username, index)
     local carti315 = Instance.new('TextButton')
     carti315.Size = UDim2.new(1, -8, 0, 28)
-    carti315.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti315.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti315.BackgroundTransparency = 0.1
     carti315.Text = '  ' .. username
     carti315.Font = Enum.Font.GothamBold
@@ -6303,26 +5865,26 @@ local function carti362(username, index)
     carti315.TextXAlignment = Enum.TextXAlignment.Left
     carti315.LayoutOrder = index
     carti315.Parent = carti351
-    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti315).CornerRadius = UDim.new(0, 6)
+    
     local carti316 = Instance.new('UIStroke')
     carti316.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti316.Color = Color3.fromRGB(255, 34, 34)
+    carti316.Color = Color3.fromRGB(255, 200, 50)
     carti316.Thickness = 1.5
     carti316.Transparency = 0.2
     carti316.Parent = carti315
 
-    carti315.MouseEnter:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(45, 0, 0) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 80, 80), Transparency = 0 }):Play()
+    cartiRuntime:Connect(carti315.MouseEnter, function()
+        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(70, 65, 95) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 220, 80), Transparency = 0 }):Play()
+    end)
+    
+    cartiRuntime:Connect(carti315.MouseLeave, function()
+        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(55, 50, 75) }):Play()
+        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 200, 50), Transparency = 0.2 }):Play()
     end)
 
-    carti315.MouseLeave:Connect(function()
-        carti6:Create(carti315, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(26, 26, 26) }):Play()
-        carti6:Create(carti316, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 34, 34), Transparency = 0.2 }):Play()
-    end)
-
-    carti315.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti315.MouseButton1Click, function()
         setActiveTab('Control')
         partnerBox.Text = username
         updatePartnerFromUsername(username)
@@ -6353,12 +5915,11 @@ local function carti363()
     carti351.CanvasSize = UDim2.new(0, 0, 0, (#carti364 * 29) + 8)
 end
 
-carti350:GetPropertyChangedSignal("Text"):Connect(carti363)
+cartiRuntime:Connect(carti350:GetPropertyChangedSignal("Text"), carti363)
 carti363()
-end
 
 -- ==================== RGB STATE (defined early for Sets tab access) ====================
-local carti365 = { hue = 0, speed = 0.5, enabled = false }
+local carti365 = { hue = 0, speed = 0.5, enabled = true }
 
 -- ==================== SETS TAB (KEYBINDS) ====================
 local carti366 = carti155['Sets']
@@ -6379,10 +5940,10 @@ do
     local carti225 = Instance.new('TextLabel')
     carti225.Size = UDim2.new(1, 0, 0, 20)
     carti225.BackgroundTransparency = 1
-    carti225.Text = 'Keybind Settings'
+    carti225.Text = '⌨️ Keybind Settings'
     carti225.Font = Enum.Font.GothamBold
     carti225.TextSize = 14
-    carti225.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti225.TextColor3 = Color3.fromRGB(255, 200, 50)
     carti225.TextXAlignment = Enum.TextXAlignment.Center
     carti225.LayoutOrder = 0
     carti225.Parent = carti366
@@ -6391,15 +5952,15 @@ end
 local function carti370(labelText, keybindKey, layoutOrder)
     local carti371 = Instance.new('Frame')
     carti371.Size = UDim2.new(1, 0, 0, 36)
-    carti371.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti371.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti371.BackgroundTransparency = 0.1
     carti371.LayoutOrder = layoutOrder
     carti371.Parent = carti366
-    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 6)
+    
     local carti228 = Instance.new('UIStroke')
     carti228.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti228.Color = Color3.fromRGB(255, 34, 34)
+    carti228.Color = Color3.fromRGB(255, 200, 50)
     carti228.Thickness = 1.5
     carti228.Transparency = 0.2
     carti228.Parent = carti371
@@ -6418,36 +5979,36 @@ local function carti370(labelText, keybindKey, layoutOrder)
     local carti234 = Instance.new('TextButton')
     carti234.Size = UDim2.new(0.35, -8, 0, 26)
     carti234.Position = UDim2.new(0.65, 0, 0.5, -13)
-    carti234.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+    carti234.BackgroundColor3 = Color3.fromRGB(70, 65, 95)
     carti234.BackgroundTransparency = 0.1
     carti234.Text = carti154.keybinds[keybindKey].Name
     carti234.Font = Enum.Font.GothamBold
     carti234.TextSize = 11
     carti234.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti234.Parent = carti371
-    Instance.new('UICorner', carti234).CornerRadius = UDim.new(0, 8)
-    Instance.new('UIStroke', carti234).Color = Color3.fromRGB(255, 34, 34)
+    Instance.new('UICorner', carti234).CornerRadius = UDim.new(0, 4)
+    Instance.new('UIStroke', carti234).Color = Color3.fromRGB(100, 100, 150)
     
     carti367.keybindButtons[keybindKey] = carti234
     
-    carti234.MouseEnter:Connect(function()
+    cartiRuntime:Connect(carti234.MouseEnter, function()
         if carti154.waitingForKeybind ~= keybindKey then
-            carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(45, 0, 0) }):Play()
+            carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(90, 85, 120) }):Play()
         end
     end)
-    carti234.MouseLeave:Connect(function()
+    cartiRuntime:Connect(carti234.MouseLeave, function()
         if carti154.waitingForKeybind ~= keybindKey then
-            carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(22, 22, 22) }):Play()
+            carti6:Create(carti234, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(70, 65, 95) }):Play()
         end
     end)
-    carti234.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti234.MouseButton1Click, function()
         if carti154.waitingForKeybind then
             local carti373 = carti367.keybindButtons[carti154.waitingForKeybind]
-            if carti373 then carti373.Text = carti154.keybinds[carti154.waitingForKeybind].Name; carti373.BackgroundColor3 = Color3.fromRGB(22, 22, 22) end
+            if carti373 then carti373.Text = carti154.keybinds[carti154.waitingForKeybind].Name; carti373.BackgroundColor3 = Color3.fromRGB(70, 65, 95) end
         end
         carti154.waitingForKeybind = keybindKey
         carti234.Text = '...'
-        carti234.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+        carti234.BackgroundColor3 = Color3.fromRGB(100, 80, 150)
     end)
     return carti371
 end
@@ -6468,25 +6029,25 @@ do
     local carti225 = Instance.new('TextLabel')
     carti225.Size = UDim2.new(1, 0, 0, 18)
     carti225.BackgroundTransparency = 1
-    carti225.Text = 'RGB Settings'
+    carti225.Text = '🌈 RGB Settings'
     carti225.Font = Enum.Font.GothamBold
     carti225.TextSize = 12
-    carti225.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti225.TextColor3 = Color3.fromRGB(255, 200, 50)
     carti225.TextXAlignment = Enum.TextXAlignment.Center
     carti225.LayoutOrder = 11
     carti225.Parent = carti366
     
     local carti371 = Instance.new('Frame')
     carti371.Size = UDim2.new(1, 0, 0, 36)
-    carti371.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti371.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti371.BackgroundTransparency = 0.1
     carti371.LayoutOrder = 12
     carti371.Parent = carti366
-    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 6)
+    
     local carti228 = Instance.new('UIStroke')
     carti228.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti228.Color = Color3.fromRGB(255, 34, 34)
+    carti228.Color = Color3.fromRGB(255, 200, 50)
     carti228.Thickness = 1.5
     carti228.Transparency = 0.2
     carti228.Parent = carti371
@@ -6505,47 +6066,47 @@ do
     local carti374 = Instance.new('TextBox')
     carti374.Size = UDim2.new(0.2, 0, 0, 24)
     carti374.Position = UDim2.new(0.5, 0, 0.5, -12)
-    carti374.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+    carti374.BackgroundColor3 = Color3.fromRGB(70, 65, 95)
     carti374.Text = '0.5'
     carti374.Font = Enum.Font.GothamBold
     carti374.TextSize = 11
     carti374.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti374.Parent = carti371
-    Instance.new('UICorner', carti374).CornerRadius = UDim.new(0, 8)
+    Instance.new('UICorner', carti374).CornerRadius = UDim.new(0, 4)
     
     local carti375 = Instance.new('TextButton')
     carti375.Size = UDim2.new(0, 26, 0, 24)
     carti375.Position = UDim2.new(0.72, 0, 0.5, -12)
-    carti375.BackgroundColor3 = Color3.fromRGB(80, 0, 0)
+    carti375.BackgroundColor3 = Color3.fromRGB(150, 60, 60)
     carti375.Text = '-'
     carti375.Font = Enum.Font.GothamBold
     carti375.TextSize = 14
     carti375.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti375.Parent = carti371
-    Instance.new('UICorner', carti375).CornerRadius = UDim.new(0, 8)
+    Instance.new('UICorner', carti375).CornerRadius = UDim.new(0, 4)
     
     local carti376 = Instance.new('TextButton')
     carti376.Size = UDim2.new(0, 26, 0, 24)
     carti376.Position = UDim2.new(0.86, 0, 0.5, -12)
-    carti376.BackgroundColor3 = Color3.fromRGB(0, 100, 50)
+    carti376.BackgroundColor3 = Color3.fromRGB(60, 150, 60)
     carti376.Text = '+'
     carti376.Font = Enum.Font.GothamBold
     carti376.TextSize = 14
     carti376.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti376.Parent = carti371
-    Instance.new('UICorner', carti376).CornerRadius = UDim.new(0, 8)
+    Instance.new('UICorner', carti376).CornerRadius = UDim.new(0, 4)
     
-    carti375.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti375.MouseButton1Click, function()
         local carti377 = math.max(0.1, (tonumber(carti374.Text) or 0.5) - 0.1)
         carti374.Text = string.format('%.1f', carti377)
         carti365.speed = carti377
     end)
-    carti376.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti376.MouseButton1Click, function()
         local carti377 = math.min(2.0, (tonumber(carti374.Text) or 0.5) + 0.1)
         carti374.Text = string.format('%.1f', carti377)
         carti365.speed = carti377
     end)
-    carti374.FocusLost:Connect(function()
+    cartiRuntime:Connect(carti374.FocusLost, function()
         local carti378 = tonumber(carti374.Text)
         if carti378 then
             carti378 = math.clamp(carti378, 0.1, 2.0)
@@ -6569,25 +6130,25 @@ do
     local carti225 = Instance.new('TextLabel')
     carti225.Size = UDim2.new(1, 0, 0, 18)
     carti225.BackgroundTransparency = 1
-    carti225.Text = 'Server Info'
+    carti225.Text = '🕐 Server Info'
     carti225.Font = Enum.Font.GothamBold
     carti225.TextSize = 12
-    carti225.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti225.TextColor3 = Color3.fromRGB(255, 200, 50)
     carti225.TextXAlignment = Enum.TextXAlignment.Center
     carti225.LayoutOrder = 14
     carti225.Parent = carti366
     
     local carti371 = Instance.new('Frame')
     carti371.Size = UDim2.new(1, 0, 0, 36)
-    carti371.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    carti371.BackgroundColor3 = Color3.fromRGB(55, 50, 75)
     carti371.BackgroundTransparency = 0.1
     carti371.LayoutOrder = 15
     carti371.Parent = carti366
-    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 8)
-
+    Instance.new('UICorner', carti371).CornerRadius = UDim.new(0, 6)
+    
     local carti228 = Instance.new('UIStroke')
     carti228.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    carti228.Color = Color3.fromRGB(255, 34, 34)
+    carti228.Color = Color3.fromRGB(255, 200, 50)
     carti228.Thickness = 1.5
     carti228.Transparency = 0.2
     carti228.Parent = carti371
@@ -6610,7 +6171,7 @@ do
     carti285.Text = '0h 0m 0s'
     carti285.Font = Enum.Font.GothamBold
     carti285.TextSize = 11
-    carti285.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti285.TextColor3 = Color3.fromRGB(100, 255, 150)
     carti285.TextXAlignment = Enum.TextXAlignment.Right
     carti285.Parent = carti371
     
@@ -6634,10 +6195,10 @@ do
     local carti225 = Instance.new('TextLabel')
     carti225.Size = UDim2.new(1, 0, 0, 18)
     carti225.BackgroundTransparency = 1
-    carti225.Text = 'GUI Size (Mobile)'
+    carti225.Text = '📱 GUI Size (Mobile)'
     carti225.Font = Enum.Font.GothamBold
     carti225.TextSize = 12
-    carti225.TextColor3 = Color3.fromRGB(255, 100, 100)
+    carti225.TextColor3 = Color3.fromRGB(255, 200, 50)
     carti225.TextXAlignment = Enum.TextXAlignment.Center
     carti225.LayoutOrder = 17
     carti225.Parent = carti366
@@ -6651,30 +6212,30 @@ do
     local carti380 = Instance.new('TextButton')
     carti380.Size = UDim2.new(0.48, 0, 1, 0)
     carti380.Position = UDim2.new(0, 0, 0, 0)
-    carti380.BackgroundColor3 = Color3.fromRGB(139, 0, 0)
-    carti380.Text = 'Small'
+    carti380.BackgroundColor3 = Color3.fromRGB(80, 60, 120)
+    carti380.Text = '🔍 Small'
     carti380.Font = Enum.Font.GothamBold
     carti380.TextSize = 12
     carti380.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti380.Parent = carti371
-    Instance.new('UICorner', carti380).CornerRadius = UDim.new(0, 8)
+    Instance.new('UICorner', carti380).CornerRadius = UDim.new(0, 6)
     local carti381 = Instance.new('UIStroke', carti380)
-    carti381.Color = Color3.fromRGB(255, 34, 34)
+    carti381.Color = Color3.fromRGB(255, 200, 50)
     carti381.Thickness = 1.5
     carti381.Transparency = 0.2
     
     local carti382 = Instance.new('TextButton')
     carti382.Size = UDim2.new(0.48, 0, 1, 0)
     carti382.Position = UDim2.new(0.52, 0, 0, 0)
-    carti382.BackgroundColor3 = Color3.fromRGB(0, 100, 50)
-    carti382.Text = 'Big'
+    carti382.BackgroundColor3 = Color3.fromRGB(60, 120, 80)
+    carti382.Text = '🔎 Big'
     carti382.Font = Enum.Font.GothamBold
     carti382.TextSize = 12
     carti382.TextColor3 = Color3.fromRGB(255, 255, 255)
     carti382.Parent = carti371
-    Instance.new('UICorner', carti382).CornerRadius = UDim.new(0, 8)
+    Instance.new('UICorner', carti382).CornerRadius = UDim.new(0, 6)
     local carti383 = Instance.new('UIStroke', carti382)
-    carti383.Color = Color3.fromRGB(255, 34, 34)
+    carti383.Color = Color3.fromRGB(255, 200, 50)
     carti383.Thickness = 1.5
     carti383.Transparency = 0.2
     
@@ -6683,37 +6244,38 @@ do
     carti384.Name = 'UIScale'
     carti384.Parent = carti208
     
-    carti380.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti380.MouseButton1Click, function()
         carti367.currentScale = math.max(0.7, carti367.currentScale - 0.05)
         carti384.Scale = carti367.currentScale
         if carti32 then carti32:hint({ text = 'GUI Scale: ' .. string.format('%.0f%%', carti367.currentScale * 100), length = 1, overridable = true }) end
     end)
     
-    carti382.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti382.MouseButton1Click, function()
         carti367.currentScale = math.min(1.3, carti367.currentScale + 0.05)
         carti384.Scale = carti367.currentScale
         if carti32 then carti32:hint({ text = 'GUI Scale: ' .. string.format('%.0f%%', carti367.currentScale * 100), length = 1, overridable = true }) end
     end)
     
-    carti380.MouseEnter:Connect(function() carti6:Create(carti380, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(180, 0, 0) }):Play() end)
-    carti380.MouseLeave:Connect(function() carti6:Create(carti380, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(139, 0, 0) }):Play() end)
-    carti382.MouseEnter:Connect(function() carti6:Create(carti382, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(0, 130, 65) }):Play() end)
-    carti382.MouseLeave:Connect(function() carti6:Create(carti382, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(0, 100, 50) }):Play() end)
+    cartiRuntime:Connect(carti380.MouseEnter, function() carti6:Create(carti380, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(100, 80, 150) }):Play() end)
+    cartiRuntime:Connect(carti380.MouseLeave, function() carti6:Create(carti380, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(80, 60, 120) }):Play() end)
+    cartiRuntime:Connect(carti382.MouseEnter, function() carti6:Create(carti382, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(80, 150, 100) }):Play() end)
+    cartiRuntime:Connect(carti382.MouseLeave, function() carti6:Create(carti382, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(60, 120, 80) }):Play() end)
 end
 
 -- Pet Value Calculator Section
 do
     local carti385 = { state = { M = false, N = false, F = false, R = false }, btns = {} }
-    local carti386 = { M = {Color3.fromRGB(180,0,0), Color3.fromRGB(26,26,26)}, N = {Color3.fromRGB(180,0,0), Color3.fromRGB(26,26,26)}, F = {Color3.fromRGB(180,0,0), Color3.fromRGB(26,26,26)}, R = {Color3.fromRGB(180,0,0), Color3.fromRGB(26,26,26)} }    
+    local carti386 = { M = {Color3.fromRGB(170,0,255), Color3.fromRGB(80,60,100)}, N = {Color3.fromRGB(255,215,0), Color3.fromRGB(80,60,100)}, F = {Color3.fromRGB(0,200,255), Color3.fromRGB(80,60,100)}, R = {Color3.fromRGB(0,255,100), Color3.fromRGB(80,60,100)} }
+    
     Instance.new('Frame', carti366).Size = UDim2.new(1,0,0,10); carti366:GetChildren()[#carti366:GetChildren()].BackgroundTransparency = 1; carti366:GetChildren()[#carti366:GetChildren()].LayoutOrder = 19
     
     local carti150 = Instance.new('TextLabel', carti366)
-    carti150.Size, carti150.BackgroundTransparency, carti150.Text, carti150.Font, carti150.TextSize, carti150.TextColor3, carti150.TextXAlignment, carti150.LayoutOrder = UDim2.new(1,0,0,18), 1, 'Pet Value Calculator', Enum.Font.GothamBold, 12, Color3.fromRGB(255,100,100), Enum.TextXAlignment.Center, 20
+    carti150.Size, carti150.BackgroundTransparency, carti150.Text, carti150.Font, carti150.TextSize, carti150.TextColor3, carti150.TextXAlignment, carti150.LayoutOrder = UDim2.new(1,0,0,18), 1, '💎 Pet Value Calculator', Enum.Font.GothamBold, 12, Color3.fromRGB(255,200,50), Enum.TextXAlignment.Center, 20
     
     local carti387 = Instance.new('Frame', carti366)
-    carti387.Size, carti387.BackgroundColor3, carti387.BackgroundTransparency, carti387.LayoutOrder = UDim2.new(1,0,0,30), Color3.fromRGB(26, 26, 26), 0.1, 21
+    carti387.Size, carti387.BackgroundColor3, carti387.BackgroundTransparency, carti387.LayoutOrder = UDim2.new(1,0,0,30), Color3.fromRGB(55,50,75), 0.1, 21
     Instance.new('UICorner', carti387).CornerRadius = UDim.new(0,6)
-    local carti388 = Instance.new('UIStroke', carti387); carti388.Color, carti388.Thickness, carti388.Transparency = Color3.fromRGB(255, 34, 34), 1.5, 0.2
+    local carti388 = Instance.new('UIStroke', carti387); carti388.Color, carti388.Thickness, carti388.Transparency = Color3.fromRGB(255,200,50), 1.5, 0.2
     
     carti385.input = Instance.new('TextBox', carti387)
     carti385.input.Size, carti385.input.Position, carti385.input.BackgroundTransparency, carti385.input.Text, carti385.input.PlaceholderText = UDim2.new(1,-16,1,-6), UDim2.new(0,8,0,3), 1, '', 'Enter pet name...'
@@ -6725,9 +6287,9 @@ do
     for i, p in ipairs({'M','N','F','R'}) do
         local carti390 = Instance.new('TextButton', carti389)
         carti390.Size, carti390.Position, carti390.BackgroundColor3, carti390.Text, carti390.Font, carti390.TextSize, carti390.TextColor3 = UDim2.new(0.24,-4,1,0), UDim2.new((i-1)*0.25,2,0,0), carti386[p][2], p, Enum.Font.GothamBold, 12, Color3.fromRGB(255,255,255)
-        Instance.new('UICorner', carti390).CornerRadius = UDim.new(0,8)
+        Instance.new('UICorner', carti390).CornerRadius = UDim.new(0,4)
         carti385.btns[p] = carti390
-        carti390.MouseButton1Click:Connect(function()
+        cartiRuntime:Connect(carti390.MouseButton1Click, function()
             if p == 'M' then carti385.state.M = not carti385.state.M; if carti385.state.M then carti385.state.N = false end
             elseif p == 'N' then carti385.state.N = not carti385.state.N; if carti385.state.N then carti385.state.M = false end
             else carti385.state[p] = not carti385.state[p] end
@@ -6736,16 +6298,16 @@ do
     end
     
     local carti391 = Instance.new('TextButton', carti366)
-    carti391.Size, carti391.BackgroundColor3, carti391.Text, carti391.Font, carti391.TextSize, carti391.TextColor3, carti391.LayoutOrder = UDim2.new(1,0,0,32), Color3.fromRGB(139, 0, 0), 'Calculate Value', Enum.Font.GothamBold, 12, Color3.fromRGB(255,255,255), 23
-    Instance.new('UICorner', carti391).CornerRadius = UDim.new(0,8)
-    local carti392 = Instance.new('UIStroke', carti391); carti392.Color, carti392.Thickness, carti392.Transparency = Color3.fromRGB(255, 34, 34), 1.5, 0.2
+    carti391.Size, carti391.BackgroundColor3, carti391.Text, carti391.Font, carti391.TextSize, carti391.TextColor3, carti391.LayoutOrder = UDim2.new(1,0,0,32), Color3.fromRGB(80,160,80), '📊 Calculate Value', Enum.Font.GothamBold, 12, Color3.fromRGB(255,255,255), 23
+    Instance.new('UICorner', carti391).CornerRadius = UDim.new(0,6)
+    local carti392 = Instance.new('UIStroke', carti391); carti392.Color, carti392.Thickness, carti392.Transparency = Color3.fromRGB(255,200,50), 1.5, 0.2
     
     carti385.result = Instance.new('TextLabel', carti366)
-    carti385.result.Size, carti385.result.BackgroundColor3, carti385.result.Text, carti385.result.Font, carti385.result.TextSize, carti385.result.TextColor3, carti385.result.LayoutOrder = UDim2.new(1,0,0,36), Color3.fromRGB(16, 16, 16), 'Value: --', Enum.Font.GothamBold, 14, Color3.fromRGB(255,100,100), 24
-    Instance.new('UICorner', carti385.result).CornerRadius = UDim.new(0,8)
-    local carti393 = Instance.new('UIStroke', carti385.result); carti393.Color, carti393.Thickness, carti393.Transparency = Color3.fromRGB(255, 34, 34), 1.5, 0.2
+    carti385.result.Size, carti385.result.BackgroundColor3, carti385.result.Text, carti385.result.Font, carti385.result.TextSize, carti385.result.TextColor3, carti385.result.LayoutOrder = UDim2.new(1,0,0,36), Color3.fromRGB(40,35,55), 'Value: --', Enum.Font.GothamBold, 14, Color3.fromRGB(100,255,150), 24
+    Instance.new('UICorner', carti385.result).CornerRadius = UDim.new(0,6)
+    local carti393 = Instance.new('UIStroke', carti385.result); carti393.Color, carti393.Thickness, carti393.Transparency = Color3.fromRGB(255,200,50), 1.5, 0.2
     
-    carti391.MouseButton1Click:Connect(function()
+    cartiRuntime:Connect(carti391.MouseButton1Click, function()
         local carti394 = carti385.input.Text:lower():gsub('%s+', '')
         if carti394 == '' then carti385.result.Text, carti385.result.TextColor3 = 'Enter a pet name!', Color3.fromRGB(255,100,100) return end
         local carti395, carti396 = nil, nil
@@ -6753,30 +6315,31 @@ do
         if not carti395 then carti385.result.Text, carti385.result.TextColor3 = 'Pet not found!', Color3.fromRGB(255,100,100) return end
         local carti397 = carti385.state.M and "mvalue" or (carti385.state.N and "nvalue" or "rvalue")
         local carti398 = (carti385.state.R and carti385.state.F) and " - fly&ride" or (carti385.state.R and " - ride" or (carti385.state.F and " - fly" or " - nopotion"))
-        local carti152 = carti395[carti397..carti398] or carti395[carti397] or 0
+        local carti152 = tonumber(carti395[carti397..carti398] or carti395[carti397])
+        if not carti152 then carti385.result.Text = carti396 .. ': Unknown value (' .. cartiRuntime.ValueSource .. ')' return end
         local carti399 = carti152 >= 1e9 and string.format('%.2fB',carti152/1e9) or (carti152 >= 1e6 and string.format('%.2fM',carti152/1e6) or (carti152 >= 1e3 and string.format('%.2fK',carti152/1e3) or tostring(carti152)))
         local carti400 = (carti385.state.M and 'Mega ' or '')..(carti385.state.N and 'Neon ' or '')..(carti385.state.F and 'F' or '')..(carti385.state.R and 'R' or ''); if carti400 == '' then carti400 = 'Normal' end
-        carti385.result.Text, carti385.result.TextColor3 = carti396..' ('..carti400..'): '..carti399, Color3.fromRGB(255,100,100)
+        carti385.result.Text, carti385.result.TextColor3 = carti396..' ('..carti400..'): '..carti399 .. ' [' .. cartiRuntime.ValueSource .. ']', Color3.fromRGB(100,255,150)
     end)
-    carti391.MouseEnter:Connect(function() carti6:Create(carti391, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(180, 0, 0)}):Play() end)
-    carti391.MouseLeave:Connect(function() carti6:Create(carti391, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(139, 0, 0)}):Play() end)
+    cartiRuntime:Connect(carti391.MouseEnter, function() carti6:Create(carti391, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(100,180,100)}):Play() end)
+    cartiRuntime:Connect(carti391.MouseLeave, function() carti6:Create(carti391, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(80,160,80)}):Play() end)
 end
 
 -- Keybind input handler
-carti5.InputBegan:Connect(function(input, gameProcessed)
+cartiRuntime:Connect(carti5.InputBegan, function(input, gameProcessed)
     if gameProcessed then return end
     
     if carti154.waitingForKeybind and input.UserInputType == Enum.UserInputType.Keyboard then
         local carti60 = input.KeyCode
         if carti60 == Enum.KeyCode.Escape then
             local carti315 = carti367.keybindButtons[carti154.waitingForKeybind]
-            if carti315 then carti315.Text = carti154.keybinds[carti154.waitingForKeybind].Name; carti315.BackgroundColor3 = Color3.fromRGB(22, 22, 22) end
+            if carti315 then carti315.Text = carti154.keybinds[carti154.waitingForKeybind].Name; carti315.BackgroundColor3 = Color3.fromRGB(70, 65, 95) end
             carti154.waitingForKeybind = nil
             return
         end
         carti154.keybinds[carti154.waitingForKeybind] = carti60
         local carti315 = carti367.keybindButtons[carti154.waitingForKeybind]
-        if carti315 then carti315.Text = carti60.Name; carti315.BackgroundColor3 = Color3.fromRGB(22, 22, 22) end
+        if carti315 then carti315.Text = carti60.Name; carti315.BackgroundColor3 = Color3.fromRGB(70, 65, 95) end
         carti154.waitingForKeybind = nil
         if carti32 then carti32:hint({ text = 'Keybind set to ' .. carti60.Name, length = 2, overridable = true }) end
         return
@@ -6833,13 +6396,13 @@ end)
 local carti401 = false
 local carti402, carti403, carti404
 
-carti208.InputBegan:Connect(function(input)
+cartiRuntime:Connect(carti208.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         carti401 = true
         carti403 = input.Position
         carti404 = carti208.Position
 
-        input.Changed:Connect(function()
+        cartiRuntime:Connect(input.Changed, function()
             if input.UserInputState == Enum.UserInputState.End then
                 carti401 = false
             end
@@ -6847,13 +6410,13 @@ carti208.InputBegan:Connect(function(input)
     end
 end)
 
-carti208.InputChanged:Connect(function(input)
+cartiRuntime:Connect(carti208.InputChanged, function(input)
     if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
         carti402 = input
     end
 end)
 
-carti5.InputChanged:Connect(function(input)
+cartiRuntime:Connect(carti5.InputChanged, function(input)
     if input == carti402 and carti401 then
         local carti405 = input.Position - carti403
         carti208.Position = UDim2.new(carti404.X.Scale, carti404.X.Offset + carti405.X, carti404.Y.Scale, carti404.Y.Offset + carti405.Y)
@@ -6861,7 +6424,7 @@ carti5.InputChanged:Connect(function(input)
 end)
 
 -- ==================== KEYBOARD SHORTCUTS ====================
-carti5.InputBegan:Connect(function(input, gameProcessed)
+cartiRuntime:Connect(carti5.InputBegan, function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.F6 then
         carti208.Visible = not carti208.Visible
@@ -6884,7 +6447,7 @@ if carti154.activeTabPulseTween == nil then
     local carti162 = carti156['Control']
     if carti162 then
         carti154.activeTabPulseTween = carti6:Create(carti162.stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-            Color = Color3.fromRGB(255, 34, 34):Lerp(Color3.fromRGB(255, 120, 120), 0.3), Thickness = 1.5
+            Color = Color3.fromRGB(100, 100, 255):Lerp(Color3.fromRGB(255, 255, 255), 0.25), Thickness = 1.5
         })
         carti154.activeTabPulseTween:Play()
     end
@@ -6892,11 +6455,6 @@ end
 
 task.wait(3)
 carti299(true)
-
-task.spawn(function()
-    task.wait(2)
-    carti_loadSpawnedPets()
-end)
 
 -- ==================== AUTO PARTNER EMOJI ====================
 _G.EmojiSystem = {
@@ -6911,7 +6469,7 @@ _G.EmojiSystem.display = function(index)
     pcall(function()
         local carti406 = carti2.LocalPlayer.PlayerGui.TradeApp.Frame
         
-        local carti407 = Instance.new('ImageLabel')
+        local carti407 = cartiRuntime:OwnInstance(Instance.new('ImageLabel'))
         carti407.Image = _G.EmojiSystem.reactions[index]
         carti407.BackgroundTransparency = 1
         carti407.ImageTransparency = 1
@@ -6927,7 +6485,7 @@ _G.EmojiSystem.display = function(index)
         
         local carti408, carti409, carti410 = tick(), math.random(18, 28) / 10, 0.18
         local carti411
-        carti411 = carti4.Heartbeat:Connect(function(dt)
+        carti411 = cartiRuntime:Connect(carti4.Heartbeat, function(dt)
             local carti412 = tick() - carti408
             if carti412 >= carti409 or not carti407.Parent then carti411:Disconnect() if carti407.Parent then carti407:Destroy() end return end
             local carti413 = carti407.Position.Y.Scale - carti410 * dt
@@ -6940,7 +6498,7 @@ end
 
 carti235(carti222)
 
-carti233('Auto Partner Emoji: OFF', Color3.fromRGB(42, 42, 42), Color3.fromRGB(80, 80, 80), carti222, function()
+carti233('🎭 Auto Partner Emoji: OFF', Color3.fromRGB(150, 50, 50), Color3.fromRGB(255, 100, 100), carti222, function()
     _G.EmojiSystem.running = not _G.EmojiSystem.running
     local carti234
     for _, carti152 in pairs(carti222:GetChildren()) do
@@ -6948,8 +6506,8 @@ carti233('Auto Partner Emoji: OFF', Color3.fromRGB(42, 42, 42), Color3.fromRGB(8
     end
     
     if _G.EmojiSystem.running then
-        carti234.Text = 'Auto Partner Emoji: ON'
-        carti234.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+        carti234.Text = '🎭 Auto Partner Emoji: ON'
+        carti234.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
         task.spawn(function()
             while _G.EmojiSystem.running do
                 task.wait(math.random(8, 20) / 10)
@@ -6959,8 +6517,8 @@ carti233('Auto Partner Emoji: OFF', Color3.fromRGB(42, 42, 42), Color3.fromRGB(8
             end
         end)
     else
-        carti234.Text = 'Auto Partner Emoji: OFF'
-        carti234.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+        carti234.Text = '🎭 Auto Partner Emoji: OFF'
+        carti234.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
     end
 end)
 
@@ -6976,105 +6534,6 @@ task.spawn(function()
     end
 end)
 
--- ==================== CUSTOM USERNAME HOOK ====================
-local currentCustomName = "Yoshi"
-carti154.spoofedName = currentCustomName
-
--- Create the DustyGramophoneGUI with a ChangeUsernameTextBox
-local dustyGui = carti2.LocalPlayer.PlayerGui:FindFirstChild("DustyGramophoneGUI")
-if not dustyGui then
-    dustyGui = Instance.new("ScreenGui")
-    dustyGui.Name = "DustyGramophoneGUI"
-    dustyGui.ResetOnSpawn = false
-    dustyGui.Parent = carti2.LocalPlayer:WaitForChild("PlayerGui")
-end
-
-local sourceTextBox = dustyGui:FindFirstChild("ChangeUsernameTextBox")
-if not sourceTextBox then
-    sourceTextBox = Instance.new("TextBox")
-    sourceTextBox.Name = "ChangeUsernameTextBox"
-    sourceTextBox.Size = UDim2.new(0, 200, 0, 30)
-    sourceTextBox.Position = UDim2.new(0, 240, 0, 10)
-    sourceTextBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-    sourceTextBox.Text = currentCustomName
-    sourceTextBox.Font = Enum.Font.FredokaOne
-    sourceTextBox.TextSize = 12
-    sourceTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    sourceTextBox.PlaceholderText = "Type custom name..."
-    sourceTextBox.ClearTextOnFocus = false
-    sourceTextBox.Parent = dustyGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 6)
-    corner.Parent = sourceTextBox
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(255, 34, 34)
-    stroke.Thickness = 1.2
-    stroke.Parent = sourceTextBox
-end
-
--- Non-yielding label resolver (safe for RenderStepped)
-local function findTargetLabel()
-    local tradeApp = carti2.LocalPlayer.PlayerGui:FindFirstChild("TradeApp")
-    if not tradeApp then return nil end
-    local frame = tradeApp:FindFirstChild("Frame", true)
-    if not frame then return nil end
-    local realName = carti2.LocalPlayer.Name:lower()
-    for _, lbl in ipairs(frame:GetDescendants()) do
-        if lbl:IsA('TextLabel') and lbl.Text:lower() == realName then
-            return lbl
-        end
-    end
-    return nil
-end
-
--- Yielding label resolver (for initial setup only)
-local function waitTargetLabel()
-    local ok, label = pcall(function()
-        local frame = carti2.LocalPlayer.PlayerGui:WaitForChild("TradeApp", 10)
-            :WaitForChild("Frame")
-        local realName = carti2.LocalPlayer.Name:lower()
-        for _, lbl in ipairs(frame:GetDescendants()) do
-            if lbl:IsA('TextLabel') and lbl.Text:lower() == realName then
-                return lbl
-            end
-        end
-        return nil
-    end)
-    if ok and label and label.Parent then
-        return label
-    end
-    return nil
-end
-
-local targetLabel = waitTargetLabel()
-
--- Update custom name on Enter — syncs with existing spoofedName system
-sourceTextBox.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        local newText = sourceTextBox.Text
-        if newText and newText ~= "" then
-            currentCustomName = newText
-            carti154.spoofedName = newText
-            print("[UsernameHook] Nama diubah ke: " .. currentCustomName)
-        else
-            sourceTextBox.Text = currentCustomName
-        end
-    end
-end)
-
--- Force-update every frame using FindFirstChild (no yield)
-carti4.RenderStepped:Connect(function()
-    if not currentCustomName or currentCustomName == "" then return end
-    local ok, frame = pcall(function()
-        return carti2.LocalPlayer.PlayerGui.TradeApp.Frame
-    end)
-    if not ok or not frame then return end
-    local realName = carti2.LocalPlayer.Name:lower()
-    for _, lbl in ipairs(frame:GetDescendants()) do
-        if lbl:IsA('TextLabel') and lbl.Text:lower() == realName then
-            lbl.Text = currentCustomName
-        end
-    end
-end)
+cartiRuntime:SealHooks(cartiRuntime.GlobalHooks)
+cartiRuntime:SealHooks(cartiRuntime.SharedHooks)
+cartiRuntime:SealHooks(cartiRuntime.ExportHooks)
